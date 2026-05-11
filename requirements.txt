@@ -1,4 +1,4 @@
-streamlit
 openai
+streamlit
 feedparser
-tavily-python
+exa_py
