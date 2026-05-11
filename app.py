@@ -10,7 +10,6 @@ st.set_page_config(page_title="Airbnb Policy Alert", page_icon="🏠")
 
 # --- SUSTAV PRIJAVE (LOGIN) ---
 def check_password():
-    """Vraća True ako je korisnik unio ispravnu lozinku."""
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
 
@@ -33,35 +32,35 @@ if not check_password():
 
 # --- GLAVNI DIO APLIKACIJE ---
 st.title("🏠 Airbnb Policy Alert")
-st.markdown("Ovaj alat prati vijesti o regulativama i zakonima vezanim uz kratkoročni najam **unazad 7 dana** te koristi AI za analizu utjecaja na iznajmljivače.")
+st.markdown("Ovaj alat prati vijesti o regulativama i zakonima vezanim uz kratkoročni najam **unazad 7 dana**.")
 st.divider()
 
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # --- DOHVAĆANJE I AI ANALIZA ---
-@st.cache_data(ttl=timedelta(hours=12))
+# Zbog testiranja smo maknuli cache_data da aplikacija sigurno povuče sve ponovno
 def fetch_and_analyze_news():
-    # Dodan parametar 'when:7d' kako bi Google News forsirao svježije rezultate
+    # Uklonili smo when:7d, pretražujemo malo šire
     queries = [
-        "Airbnb Hrvatska zakon OR vlada OR udruga OR ministarstvo when:7d",
-        "kratkoročni najam regulativa OR zakon when:7d",
-        "porez na nekretnine iznajmljivači when:7d",
-        "obiteljski iznajmljivači when:7d"
+        "Airbnb Hrvatska zakon OR regulativa",
+        "kratkoročni najam zakon",
+        "porez na nekretnine iznajmljivači",
+        "turizam zakon obiteljski smještaj"
     ]
     
     relevant_news = []
     seen_links = set()
-    
-    # Granica od 7 dana za precizno filtriranje
     seven_days_ago = datetime.now() - timedelta(days=7)
+    
+    total_raw_articles = 0 # Brojač za detektivski mod
 
     for query in queries:
         encoded_query = urllib.parse.quote(query)
         rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=hr&gl=HR&ceid=HR:hr"
         
         feed = feedparser.parse(rss_url)
+        total_raw_articles += len(feed.entries)
         
-        # Gledamo do 15 vijesti po upitu jer tražimo samo unazad 7 dana
         for entry in feed.entries[:15]:
             link = entry.link
             
@@ -69,27 +68,19 @@ def fetch_and_analyze_news():
                 continue
             seen_links.add(link)
 
-            # --- OBRADA DATUMA I FILTRIRANJE ---
+            # --- OBRADA DATUMA ---
             pub_date_parsed = entry.get('published_parsed')
             if pub_date_parsed:
                 dt_published = datetime.fromtimestamp(time.mktime(pub_date_parsed))
-                # Preskoči ako je starije od 7 dana
                 if dt_published < seven_days_ago:
-                    continue
+                    continue # Preskoči ako je starije od 7 dana
                 date_str = dt_published.strftime("%d.%m.%Y.")
             else:
                 date_str = "Nepoznat datum"
 
-            # --- OBRADA NASLOVA I IZVORA ---
             raw_title = entry.title
-            source = "Nepoznat izvor"
-            clean_title = raw_title
-            
-            # Google News obično na kraj naslova stavlja ime portala iza ' - '
-            if " - " in raw_title:
-                clean_title = raw_title.rsplit(" - ", 1)[0]
-                source = raw_title.rsplit(" - ", 1)[1]
-
+            source = raw_title.rsplit(" - ", 1)[1] if " - " in raw_title else "Nepoznat izvor"
+            clean_title = raw_title.rsplit(" - ", 1)[0] if " - " in raw_title else raw_title
             summary = entry.get('description', '')
 
             # --- AI ANALIZA ---
@@ -97,43 +88,36 @@ def fetch_and_analyze_news():
                 response = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
-                        {"role": "system", "content": "Ti si stručnjak za analizu javnih politika i turističkih regulativa u Hrvatskoj."},
-                        {"role": "user", "content": f"Analiziraj sljedeću vijest. Je li vezana za mijenjanje zakona, poreza, ili javnih politika o Airbnb-u i kratkoročnom najmu? \nAko NIJE (npr. samo je crna kronika, uređenje stana ili obična turistička reportaža), odgovori samo s 'NE'.\nAko JEST, odgovori točno u ovom formatu: 'DA | [Kratka rečenica koja objašnjava zašto je ovo bitno za Airbnb iznajmljivače policy-wise]'.\n\nNaslov: {clean_title}\nSažetak: {summary}"}
+                        {"role": "system", "content": "Ti si stručnjak za analizu turističkih regulativa u Hrvatskoj."},
+                        {"role": "user", "content": f"Je li ova vijest vezana za mijenjanje zakona, poreza, ili javnih politika o kratkoročnom najmu? Ako NIJE, odgovori s 'NE'. Ako JEST, odgovori točno u formatu: 'DA | [Kratki razlog]'.\n\nNaslov: {clean_title}\nSažetak: {summary}"}
                     ],
-                    max_tokens=150, # Povećano da AI ima prostora za pisanje razloga
+                    max_tokens=150,
                     temperature=0.1
                 )
                 
                 answer = response.choices[0].message.content.strip()
                 
-                # Ako je vijest procijenjena kao relevantna (počinje s DA)
                 if answer.upper().startswith("DA"):
-                    reason = "Relevantna policy vijest."
-                    # Izdvajanje razloga iz AI odgovora
-                    if "|" in answer:
-                        reason = answer.split("|", 1)[1].strip()
-                    
+                    reason = answer.split("|", 1)[1].strip() if "|" in answer else "Relevantna policy vijest."
                     relevant_news.append({
-                        "title": clean_title,
-                        "link": link,
-                        "date": date_str,
-                        "source": source,
-                        "reason": reason
+                        "title": clean_title, "link": link, "date": date_str, "source": source, "reason": reason
                     })
             except Exception as e:
-                pass # U slučaju greške pri komunikaciji s API-jem preskačemo vijest
+                # SADA ĆEMO VIDJETI AKO OPENAI JAVLJA GREŠKU
+                st.error(f"🚨 Greška s OpenAI API-jem: {e}")
                 
-    return relevant_news
+    return relevant_news, total_raw_articles
 
 # --- PRIKAZ REZULTATA ---
 with st.spinner("Pretražujem web za zadnjih 7 dana i AI analizira sadržaj..."):
-    news_items = fetch_and_analyze_news()
+    news_items, raw_count = fetch_and_analyze_news()
+
+# Prikazujemo mali tehnički info
+st.caption(f"*(Detektivski info: Google je ukupno pronašao {raw_count} sirovih vijesti prije AI filtriranja)*")
 
 if news_items:
     st.success(f"Pronađeno je {len(news_items)} bitnih vijesti u zadnjih 7 dana!")
-    
     for item in news_items:
-        # Lijepo formatirani prikaz sa svim traženim detaljima
         st.markdown(f"### [{item['title']}]({item['link']})")
         st.caption(f"📅 **Datum:** {item['date']} | 📰 **Izvor:** {item['source']}")
         st.info(f"💡 **Zašto je bitno:** {item['reason']}")
