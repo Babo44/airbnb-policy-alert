@@ -36,7 +36,6 @@ st.divider()
 # --- FUNKCIJA ZA DOHVAĆANJE (EXA MOTOR) ---
 @st.cache_data(ttl=timedelta(hours=6))
 def fetch_news_exa():
-    # S obzirom na to da Exa pretražuje semantički, upiti mogu biti prirodniji
     queries = [
         "najnovije vijesti Airbnb i kratkoročni najam u Hrvatskoj",
         "Zakon o upravljanju i održavanju zgrada suglasnost susjeda",
@@ -54,13 +53,12 @@ def fetch_news_exa():
     
     for q in queries:
         try:
-            # Exa Search s uključenim sadržajem i STROGM datumom
+            # OBRISAN 'use_autoprompt' parametar
             search_response = exa.search_and_contents(
                 q,
-                type="neural",          # Semantička pretraga
-                use_autoprompt=True,    # Exa sama poboljšava naš upit iza kulisa
-                num_results=5,          # Broj rezultata po upitu
-                start_published_date=start_date_str # OVDJE JE KLJUČ - Blokira sve starije od ovog datuma!
+                type="neural",
+                num_results=5,
+                start_published_date=start_date_str
             )
             all_results.extend(search_response.results)
         except Exception as e:
@@ -72,7 +70,6 @@ def fetch_news_exa():
     final_output = []
     
     for item in unique_results:
-        # Exa obično šalje vrlo uredan datum objave
         raw_date = item.published_date
         if raw_date:
             try:
@@ -84,7 +81,7 @@ def fetch_news_exa():
 
         source_name = item.url.split('/')[2].replace('www.', '')
 
-        # --- AI FILTER (Sada samo čisti oglase, datumi su osigurani) ---
+        # --- AI FILTER ---
         try:
             response = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -94,7 +91,7 @@ def fetch_news_exa():
                     PRIHVATI sve ostale vijesti koje se tiču turizma, zakona, poreza ili stakeholdera u formatu: DA | [Kratki, informativni sažetak od 2 rečenice].
                     
                     Naslov: {item.title}
-                    Sadržaj: {item.text}"""} # Exa vraća cijeli tekst u varijabli .text
+                    Sadržaj: {item.text}"""}
                 ],
                 max_tokens=150,
                 temperature=0
@@ -114,7 +111,6 @@ def fetch_news_exa():
         except:
             continue
             
-    # Sortiranje po datumu (najnovije na vrhu) ako ima datuma
     return final_output
 
 # --- PRIKAZ ---
