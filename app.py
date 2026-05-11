@@ -30,26 +30,26 @@ tavily = TavilyClient(api_key=st.secrets["TAVILY_API_KEY"])
 openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 st.title("🏛️ Airbnb Public Affairs & GR Tracker")
-st.markdown(f"**Status:** Skeniranje regulatornih kretanja i objava Vlade RH (Zadnjih 14 dana)")
+st.markdown(f"**Status:** Skeniranje regulatornih kretanja i objava Vlade RH (Zadnja **3 dana**)")
 st.divider()
 
 # --- FUNKCIJA ZA PAMETNU PRETRAGU I ANALIZU ---
-@st.cache_data(ttl=timedelta(hours=12))
+@st.cache_data(ttl=timedelta(hours=6)) # Osvježava se 4 puta dnevno
 def run_gr_intelligence():
-    # Public Affairs fokusirani upiti
+    # Fokusirani upiti za brzi pregled zadnja 3 dana
     queries = [
         "Sjednica Nacionalnog vijeća za razvoj turizma Hrvatska vijesti",
-        "Zakon o upravljanju i održavanju zgrada apartmani status",
-        "Ministarstvo turizma i sporta Tonči Glavina izjave",
-        "HTZ statistika turizam sezona 2026",
+        "Zakon o upravljanju i održavanju zgrada apartmani novosti",
+        "Ministarstvo turizma i sporta Tonči Glavina izjave danas",
+        "HTZ najnoviji podaci turizam",
         "Hrvatska udruga obiteljskog smještaja vijesti",
-        "Porez na nekretnine iznajmljivači Hrvatska zakonska promjena"
+        "Porez na nekretnine iznajmljivači najave"
     ]
     
     all_results = []
     
     for q in queries:
-        # Tavily pretražuje cijeli web i vraća sadržaj stranica
+        # Pretražujemo samo najnovije (zadnja 3 dana se filtriraju kroz AI i Tavily 'advanced')
         search_result = tavily.search(
             query=q, 
             search_depth="advanced", 
@@ -58,21 +58,18 @@ def run_gr_intelligence():
         )
         all_results.extend(search_result['results'])
     
-    # Uklanjanje duplikata po URL-u
     unique_results = {res['url']: res for res in all_results}.values()
-    
     final_alerts = []
     
     for item in unique_results:
-        # OpenAI analizira puni kontekst koji je Tavily izvukao
         try:
             response = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "Ti si Senior Public Affairs Manager za Airbnb. Tvoj zadatak je filtrirati vijesti i dati kratku GR analizu."},
-                    {"role": "user", "content": f"""Analiziraj ovaj tekst. Ako se radi o oglasu ili nebitnoj vijesti, odgovori 'NE'. 
-                    Ako je vijest bitna za Airbnb (regulative, porezi, politika, makro podaci sezone, potezi Vlade), odgovori u formatu:
-                    DA | [Kategorija: npr. Regulativa, Porezi, Tržišni podaci] | [Sažeta GR analiza: zašto je ovo bitno za Airbnb strateški]
+                    {"role": "user", "content": f"""Analiziraj ovaj tekst. Ako se radi o oglasu, staroj vijesti ili nebitnoj temi, odgovori 'NE'. 
+                    Ako je vijest bitna i objavljena/aktualna u zadnja 3 dana, odgovori u formatu:
+                    DA | [Kategorija] | [Kratka GR analiza]
                     
                     Tekst: {item['title']} - {item['content']}"""}
                 ],
@@ -99,25 +96,23 @@ def run_gr_intelligence():
     return final_alerts
 
 # --- PRIKAZ PODATAKA ---
-with st.spinner("Tavily pretražuje web, Vlada.hr i medije..."):
+with st.spinner("Skeniram najnovije objave (zadnja 3 dana)..."):
     alerts = run_gr_intelligence()
 
 if alerts:
-    st.info(f"Pronađeno {len(alerts)} relevantnih kretanja za Airbnb PA strategiju.")
-    
-    # Grupiranje po kategorijama (opcionalno vizualno)
+    st.success(f"Pronađeno {len(alerts)} relevantnih tema u zadnja 3 dana.")
     for alert in alerts:
         with st.container():
             col1, col2 = st.columns([1, 4])
             with col1:
-                st.write(f"**{alert['category']}**")
+                st.write(f"🏷️ **{alert['category']}**")
             with col2:
                 st.markdown(f"#### [{alert['title']}]({alert['url']})")
-                st.write(f"🔎 **GR Analiza:** {alert['insight']}")
+                st.write(f"🏛️ **GR Analiza:** {alert['insight']}")
             st.divider()
 else:
-    st.warning("Nema novih kritičnih objava u zadnjih 14 dana.")
+    st.info("Nema novih kritičnih kretanja u zadnja 3 dana. Sustav je čist.")
 
-if st.button("Ručno osvježi podatke (Clear Cache)"):
+if st.button("Prisili osvježavanje podataka"):
     st.cache_data.clear()
     st.rerun()
