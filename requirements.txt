@@ -1,3 +1,4 @@
 streamlit
 openai
 feedparser
+tavily-python
