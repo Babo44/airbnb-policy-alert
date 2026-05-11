@@ -39,21 +39,14 @@ client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # --- DOHVAĆANJE I AI ANALIZA ---
 def fetch_and_analyze_news():
-    # Uklonili smo sve navodnike i OR naredbe.
-    # Sada imamo puno jednostavnih upita koje Google News savršeno razumije.
+    # 6 jakih i jasnih pojmova
     queries = [
-        "Zakon o ugostiteljskoj djelatnosti",
-        "Zakon o upravljanju zgradama apartmani",
-        "porez na nekretnine iznajmljivači",
-        "Tonči Glavina turizam",
-        "Ministarstvo turizma iznajmljivači",
-        "kratkoročni najam regulativa",
-        "Airbnb zakon Hrvatska",
-        "obiteljski smještaj porez",
-        "Udruga obiteljskog smještaja",
-        "Zajednica obiteljskog smještaja",
-        "Glas poduzetnika apartmani",
-        "Ministarstvo financija porez nekretnine"
+        "Airbnb Hrvatska",
+        "kratkoročni najam",
+        "porez na nekretnine",
+        "Tonči Glavina",
+        "Zakon o upravljanju zgradama",
+        "turizam apartmani"
     ]
     
     relevant_news = []
@@ -63,16 +56,16 @@ def fetch_and_analyze_news():
     total_raw_articles = 0 
 
     for query in queries:
-        encoded_query = urllib.parse.quote(query)
+        # KLJUČNA PROMJENA 1: quote_plus stavlja pluseve (+) umjesto razmaka, što Google voli
+        encoded_query = urllib.parse.quote_plus(query)
         rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=hr&gl=HR&ceid=HR:hr"
         
         feed = feedparser.parse(rss_url)
         total_raw_articles += len(feed.entries)
         
-        for entry in feed.entries[:20]: # Uzimamo top 20 iz SVAKOG od ovih 12 upita
+        for entry in feed.entries[:20]:
             link = entry.link
             
-            # Sprječavamo duplikate
             if link in seen_links:
                 continue
             seen_links.add(link)
@@ -82,7 +75,7 @@ def fetch_and_analyze_news():
             if pub_date_parsed:
                 dt_published = datetime.fromtimestamp(time.mktime(pub_date_parsed))
                 if dt_published < seven_days_ago:
-                    continue # AI uopće ne čita ako je starije od 7 dana
+                    continue 
                 date_str = dt_published.strftime("%d.%m.%Y.")
             else:
                 date_str = "Nepoznat datum"
@@ -98,7 +91,7 @@ def fetch_and_analyze_news():
                     model="gpt-4o-mini",
                     messages=[
                         {"role": "system", "content": "Ti si stručnjak za analizu turističkih regulativa u Hrvatskoj."},
-                        {"role": "user", "content": f"Je li ova vijest vezana za mijenjanje zakona, poreza, ili javnih politika o kratkoročnom najmu? Ako NIJE (npr. samo turistička reportaža, sport ili crna kronika), odgovori s 'NE'. Ako JEST, odgovori točno u formatu: 'DA | [Kratki razlog]'.\n\nNaslov: {clean_title}\nSažetak: {summary}"}
+                        {"role": "user", "content": f"Je li ova vijest vezana za mijenjanje zakona, poreza, ili javnih politika o kratkoročnom najmu? Ako NIJE, odgovori s 'NE'. Ako JEST, odgovori točno u formatu: 'DA | [Kratki razlog]'.\n\nNaslov: {clean_title}\nSažetak: {summary}"}
                     ],
                     max_tokens=150,
                     temperature=0.1
@@ -113,11 +106,14 @@ def fetch_and_analyze_news():
                     })
             except Exception as e:
                 st.error(f"🚨 Greška s OpenAI API-jem: {e}")
+        
+        # KLJUČNA PROMJENA 2: Pauza od 1 sekunde da nas Google ne blokira zbog spama
+        time.sleep(1)
                 
     return relevant_news, total_raw_articles
 
 # --- PRIKAZ REZULTATA ---
-with st.spinner("Pretražujem web za zadnjih 7 dana i AI analizira sadržaj (prikupljam sirove podatke)..."):
+with st.spinner("Pretražujem web za zadnjih 7 dana i AI analizira sadržaj (prikupljam sirove podatke, traje oko 10-15 sekundi)..."):
     news_items, raw_count = fetch_and_analyze_news()
 
 st.caption(f"*(Detektivski info: Google je ukupno pronašao {raw_count} sirovih vijesti prije vremenskog i AI filtriranja)*")
