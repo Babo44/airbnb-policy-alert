@@ -39,7 +39,6 @@ client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # --- DOHVAĆANJE I AI ANALIZA ---
 def fetch_and_analyze_news():
-    # 6 jakih i jasnih pojmova
     queries = [
         "Airbnb Hrvatska",
         "kratkoročni najam",
@@ -56,7 +55,6 @@ def fetch_and_analyze_news():
     total_raw_articles = 0 
 
     for query in queries:
-        # KLJUČNA PROMJENA 1: quote_plus stavlja pluseve (+) umjesto razmaka, što Google voli
         encoded_query = urllib.parse.quote_plus(query)
         rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=hr&gl=HR&ceid=HR:hr"
         
@@ -70,7 +68,6 @@ def fetch_and_analyze_news():
                 continue
             seen_links.add(link)
 
-            # --- OBRADA DATUMA ---
             pub_date_parsed = entry.get('published_parsed')
             if pub_date_parsed:
                 dt_published = datetime.fromtimestamp(time.mktime(pub_date_parsed))
@@ -85,13 +82,13 @@ def fetch_and_analyze_news():
             clean_title = raw_title.rsplit(" - ", 1)[0] if " - " in raw_title else raw_title
             summary = entry.get('description', '')
 
-            # --- AI ANALIZA ---
+            # --- NOVI, OPUŠTENIJI AI PROMPT ---
             try:
                 response = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
-                        {"role": "system", "content": "Ti si stručnjak za analizu turističkih regulativa u Hrvatskoj."},
-                        {"role": "user", "content": f"Je li ova vijest vezana za mijenjanje zakona, poreza, ili javnih politika o kratkoročnom najmu? Ako NIJE, odgovori s 'NE'. Ako JEST, odgovori točno u formatu: 'DA | [Kratki razlog]'.\n\nNaslov: {clean_title}\nSažetak: {summary}"}
+                        {"role": "system", "content": "Ti si korisni asistent za iznajmljivače apartmana u Hrvatskoj koji prati sve vijesti koje bi mogle utjecati na njihov posao."},
+                        {"role": "user", "content": f"Pročitaj ovu vijest. Je li bitna za nekoga tko se bavi kratkoročnim najmom i prati regulative?\n\nPRIHVATI vijest (DA) ako se spominje: porez na nekretnine, pravila za zgrade (suglasnost susjeda), izjave ministra turizma o strategiji, zahtjevi udruga iznajmljivača, inspekcije ili bilo kakva nova pravila.\nODBIJ vijest (NE) ako je u pitanju: obična statistika (broj noćenja), crna kronika (nesreće), reklama za apartman, sport ili promet.\n\nAko prihvaćaš, odgovori točno u formatu: 'DA | [Kratko objasni zašto je ovo korisno pratiti]'.\nAko odbijaš, odgovori samo: 'NE'.\n\nNaslov: {clean_title}\nSažetak: {summary}"}
                     ],
                     max_tokens=150,
                     temperature=0.1
@@ -107,7 +104,6 @@ def fetch_and_analyze_news():
             except Exception as e:
                 st.error(f"🚨 Greška s OpenAI API-jem: {e}")
         
-        # KLJUČNA PROMJENA 2: Pauza od 1 sekunde da nas Google ne blokira zbog spama
         time.sleep(1)
                 
     return relevant_news, total_raw_articles
