@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import time
 
 # --- KONFIGURACIJA STRANICE ---
-st.set_page_config(page_title="Airbnb Policy Alert", page_icon="🏠")
+st.set_page_config(page_title="Airbnb Public Affairs Alert", page_icon="🏛️", layout="wide")
 
 # --- SUSTAV PRIJAVE (LOGIN) ---
 def check_password():
@@ -31,27 +31,32 @@ if not check_password():
 
 
 # --- GLAVNI DIO APLIKACIJE ---
-st.title("🏠 Airbnb Policy Alert")
-st.markdown("Ovaj alat prati vijesti o kratkoročnom najmu i turizmu **unazad 7 dana**. Prikazuje apsolutno sve relevantno i uklanja samo spam i oglase.")
+st.title("🏛️ Airbnb Public Affairs & GR Tracker")
+st.markdown("Alat dizajniran za **Government Relations menadžere**. Prati poteze Vlade, Nacionalnog vijeća, zakone, izjave ministara i makroekonomske podatke o turističkoj sezoni (zadnjih 14 dana).")
 st.divider()
 
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-# --- DOHVAĆANJE I AI ANALIZA (Vraćen Cache na 12 sati za štednju novca) ---
+# --- DOHVAĆANJE I AI ANALIZA ---
 @st.cache_data(ttl=timedelta(hours=12))
 def fetch_and_analyze_news():
+    # Mreža pretrage prilagođena za Public Affairs
     queries = [
-        "Airbnb Hrvatska",
-        "kratkoročni najam",
-        "porez na nekretnine",
-        "Tonči Glavina",
-        "Zakon o upravljanju zgradama",
-        "turizam apartmani"
+        "Nacionalno vijeće za razvoj turizma",
+        "Ministarstvo turizma sezona",
+        "HTZ podaci turizam",
+        "Vlada RH turizam",
+        "Zakon o upravljanju zgradama apartmani",
+        "kratkoročni najam zakon",
+        "porez na nekretnine iznajmljivači",
+        "Tonči Glavina cijene",
+        "Airbnb Hrvatska"
     ]
     
     relevant_news = []
     seen_links = set()
-    seven_days_ago = datetime.now() - timedelta(days=7)
+    # Povećano na 14 dana da uhvatimo sjednice od prošlog tjedna
+    days_ago = datetime.now() - timedelta(days=14)
     
     total_raw_articles = 0 
 
@@ -64,7 +69,6 @@ def fetch_and_analyze_news():
         
         for entry in feed.entries[:25]:
             link = entry.link
-            
             if link in seen_links:
                 continue
             seen_links.add(link)
@@ -72,7 +76,7 @@ def fetch_and_analyze_news():
             pub_date_parsed = entry.get('published_parsed')
             if pub_date_parsed:
                 dt_published = datetime.fromtimestamp(time.mktime(pub_date_parsed))
-                if dt_published < seven_days_ago:
+                if dt_published < days_ago:
                     continue 
                 date_str = dt_published.strftime("%d.%m.%Y.")
             else:
@@ -83,13 +87,13 @@ def fetch_and_analyze_news():
             clean_title = raw_title.rsplit(" - ", 1)[0] if " - " in raw_title else raw_title
             summary = entry.get('description', '')
 
-            # --- NOVI, SVEOPUHVATNI AI PROMPT (GLUMI SAMO "REDARA" ZA OGLASE) ---
+            # --- AI PROMPT ZA PUBLIC AFFAIRS MANAGERA ---
             try:
                 response = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
-                        {"role": "system", "content": "Ti si brzi filter za vijesti o turizmu i iznajmljivanju."},
-                        {"role": "user", "content": f"Zanima nas doslovno SVE o Airbnb-u, kratkoročnom najmu, turizmu, zakonima i statistikama u Hrvatskoj.\n\nTVOJ JEDINI ZADATAK JE IZBACITI OGLASE I POTPUNI SPAM.\n\nODBIJ (odgovori samo 'NE') isključivo ako je ovo oglas za prodaju nekretnine, oglas za rezervaciju apartmana, ili potpuni spam koji nema veze s turizmom.\n\nPRIHVATI (odgovori 'DA | [Kratki sažetak članka u jednoj rečenici]') sve ostale vijesti: zakone, statistike, rasprave, nesreće, žalbe građana, izjave političara i trendove.\n\nNaslov: {clean_title}\nSažetak: {summary}"}
+                        {"role": "system", "content": "Ti si Senior Public Affairs i Government Relations analitičar za Airbnb u Hrvatskoj."},
+                        {"role": "user", "content": f"Procijeni važnost ove vijesti. Tražimo sve o: regulativama, sjednicama vlade/vijeća, podacima HTZ-a o sezoni, cijenama, potezima ministarstava i udruga.\n\nVAŽNO: Hrvatski portali često skrivaju sažetak (npr. piše samo 'Pročitajte više'). U tom slučaju, OSLONI SE ISKLJUČIVO NA NASLOV!\n\nODBIJ (samo 'NE') JEDINO ako je ovo klasičan oglas za prodaju nekretnine, sport ili čista crna kronika.\nPRIHVATI ('DA | [Tvoj kratki GR komentar zašto je ovo politički/poslovno bitno]') sve vezano za turističku politiku i brojke.\n\nNaslov: {clean_title}\nSažetak: {summary}"}
                     ],
                     max_tokens=150,
                     temperature=0.1
@@ -98,29 +102,29 @@ def fetch_and_analyze_news():
                 answer = response.choices[0].message.content.strip()
                 
                 if answer.upper().startswith("DA"):
-                    reason = answer.split("|", 1)[1].strip() if "|" in answer else "Općenita vijest o turizmu/najmu."
+                    reason = answer.split("|", 1)[1].strip() if "|" in answer else "Relevantno za GR i javne politike."
                     relevant_news.append({
                         "title": clean_title, "link": link, "date": date_str, "source": source, "reason": reason
                     })
             except Exception as e:
-                pass # U cache modu gasimo ispisivanje grešaka da stranica ostane čista
+                pass 
         
         time.sleep(1)
                 
     return relevant_news, total_raw_articles
 
 # --- PRIKAZ REZULTATA ---
-with st.spinner("Pretražujem web za zadnjih 7 dana i AI izbacuje oglase (traje oko 10-15 sekundi)..."):
+with st.spinner("Skeniram portale unazad 14 dana i radim Public Affairs analizu (cca 15 sekundi)..."):
     news_items, raw_count = fetch_and_analyze_news()
 
-st.caption(f"*(Detektivski info: Od {raw_count} sirovih rezultata, AI je izbacio oglase i ostavio {len(news_items)} vijesti)*")
+st.caption(f"*(Tehnički info: Od {raw_count} prikupljenih članaka, AI je izvukao {len(news_items)} GR sažetaka)*")
 
 if news_items:
-    st.success(f"Pronađeno je {len(news_items)} vijesti u zadnjih 7 dana!")
+    st.success(f"Pronađeno je {len(news_items)} važnih tema u zadnjih 14 dana!")
     for item in news_items:
-        st.markdown(f"### [{item['title']}]({item['link']})")
+        st.markdown(f"#### [{item['title']}]({item['link']})")
         st.caption(f"📅 **Datum:** {item['date']} | 📰 **Izvor:** {item['source']}")
-        st.info(f"💡 **Sažetak:** {item['reason']}")
+        st.info(f"🏛️ **GR Analiza:** {item['reason']}")
         st.divider()
 else:
-    st.info("U zadnjih 7 dana nije bilo nikakvih novosti.")
+    st.info("Nema novih političkih ni statističkih kretanja u zadnjih 14 dana.")
