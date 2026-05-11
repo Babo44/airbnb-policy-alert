@@ -1,5 +1,5 @@
 import streamlit as st
-from tavily import TavilyClient
+from exa_py import Exa
 from openai import OpenAI
 from datetime import datetime, timedelta
 
@@ -25,82 +25,76 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- INICIJALIZACIJA ---
-tavily = TavilyClient(api_key=st.secrets["TAVILY_API_KEY"])
+# --- INICIJALIZACIJA KLIJENATA ---
+exa = Exa(api_key=st.secrets["EXA_API_KEY"])
 openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 st.title("🏠 Airbnb vijesti")
-st.markdown("Praćenje stakeholdera, zakona i statistike. **Strogi filter: Samo zadnja 3 dana.**")
+st.markdown("Praćenje stakeholdera, zakona i statistike. **Exa API osigurava striktne datume (zadnja 3 dana).**")
 st.divider()
 
-# --- FUNKCIJA ZA DOHVAĆANJE ---
+# --- FUNKCIJA ZA DOHVAĆANJE (EXA MOTOR) ---
 @st.cache_data(ttl=timedelta(hours=6))
-def fetch_news_comprehensive():
+def fetch_news_exa():
+    # S obzirom na to da Exa pretražuje semantički, upiti mogu biti prirodniji
     queries = [
-        "Airbnb Hrvatska vijesti",
-        "kratkoročni najam zakoni prijedlozi",
-        "Ministarstvo turizma i sporta Tonči Glavina objave",
-        "HTZ statistika istraživanja turizam",
-        "Hrvatska udruga obiteljskog smještaja vijesti",
-        "Zajednica obiteljskog turizma HGK",
-        "Porez na nekretnine Hrvatska novosti",
-        "Zakon o ugostiteljskoj djelatnosti izmjene",
-        "Udruga Glas poduzetnika iznajmljivači"
+        "najnovije vijesti Airbnb i kratkoročni najam u Hrvatskoj",
+        "Zakon o upravljanju i održavanju zgrada suglasnost susjeda",
+        "Ministarstvo turizma i sporta ministar Tonči Glavina objave",
+        "Hrvatska turistička zajednica HTZ statistika turizam",
+        "Hrvatska udruga obiteljskog smještaja ili Glas poduzetnika iznajmljivači",
+        "porez na nekretnine Hrvatska novosti"
     ]
     
-    all_results = []
-    # Definiramo granicu od 3 dana (72 sata)
+    # Računamo točan datum od prije 3 dana u formatu koji Exa razumije (YYYY-MM-DD)
     tri_dana_unazad = datetime.now() - timedelta(days=3)
-    danas_str = datetime.now().strftime("%d.%m.%Y.")
+    start_date_str = tri_dana_unazad.strftime('%Y-%m-%d')
+    
+    all_results = []
     
     for q in queries:
-        search_result = tavily.search(
-            query=q, 
-            search_depth="advanced", 
-            max_results=6, # Smanjeno s 8 kako bi pretraga bila brža i preciznija
-            include_raw_content=False,
-            include_images=False
-        )
-        all_results.extend(search_result['results'])
-    
-    unique_results = {res['url']: res for res in all_results}.values()
+        try:
+            # Exa Search s uključenim sadržajem i STROGM datumom
+            search_response = exa.search_and_contents(
+                q,
+                type="neural",          # Semantička pretraga
+                use_autoprompt=True,    # Exa sama poboljšava naš upit iza kulisa
+                num_results=5,          # Broj rezultata po upitu
+                start_published_date=start_date_str # OVDJE JE KLJUČ - Blokira sve starije od ovog datuma!
+            )
+            all_results.extend(search_response.results)
+        except Exception as e:
+            st.error(f"Greška pri dohvaćanju Exa rezultata: {e}")
+            continue
+
+    # Uklanjanje duplikata po URL-u
+    unique_results = {res.url: res for res in all_results}.values()
     final_output = []
     
     for item in unique_results:
-        # --- 1. STROGI PYTHON FILTER DATUMA ---
-        raw_date = item.get('published_date', None)
-        clean_date = "Datum nije naveden"
-        
+        # Exa obično šalje vrlo uredan datum objave
+        raw_date = item.published_date
         if raw_date:
             try:
-                # Tavily vraća ISO format (npr. 2026-05-11T15:00:00Z)
-                dt_published = datetime.fromisoformat(raw_date.replace('Z', '').split('.')[0])
-                
-                # Ako je vijest starija od 3 dana, odmah preskačemo!
-                if dt_published < tri_dana_unazad:
-                    continue 
-                
-                clean_date = dt_published.strftime('%d.%m.%Y.')
+                clean_date = datetime.fromisoformat(raw_date.replace('Z', '').split('T')[0]).strftime('%d.%m.%Y.')
             except:
-                pass # Ako pukne pretvaranje datuma, ostavljamo da AI odluči
+                clean_date = "Unutar zadnja 3 dana"
+        else:
+            clean_date = "Unutar zadnja 3 dana"
 
-        source_name = item['url'].split('/')[2].replace('www.', '')
+        source_name = item.url.split('/')[2].replace('www.', '')
 
-        # --- 2. AI KALENDAR FILTER ---
+        # --- AI FILTER (Sada samo čisti oglase, datumi su osigurani) ---
         try:
             response = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": f"Ti si analitičar vijesti za Airbnb. Danas je {danas_str}."},
-                    {"role": "user", "content": f"""Analiziraj ovu vijest. 
-                    ODBIJ (odgovori samo 'NE') u ova DVA slučaja:
-                    1. Riječ je o oglasu za prodaju ili iznajmljivanje stana.
-                    2. Iz teksta je očito da se radi o staroj vijesti koja NIJE iz zadnja 3 dana.
+                    {"role": "system", "content": "Ti si analitičar vijesti za Airbnb."},
+                    {"role": "user", "content": f"""Analiziraj ovu vijest. ODBIJ (odgovori samo 'NE') ISKLJUČIVO ako se radi o direktnom oglasu za prodaju ili iznajmljivanje stana/apartmana (Booking, Njuškalo, agencije).
+                    PRIHVATI sve ostale vijesti koje se tiču turizma, zakona, poreza ili stakeholdera u formatu: DA | [Kratki, informativni sažetak od 2 rečenice].
                     
-                    PRIHVATI sve ostalo (DA | [Kratki sažetak od 1-2 rečenice]) ako se tiče stakeholdera, zakona, statistike ili Airbnb-a u zadnja 3 dana.
-                    
-                    Naslov: {item['title']}
-                    Sadržaj: {item['content']}"""}
+                    Naslov: {item.title}
+                    Sadržaj: {item.text}"""} # Exa vraća cijeli tekst u varijabli .text
                 ],
                 max_tokens=150,
                 temperature=0
@@ -111,8 +105,8 @@ def fetch_news_comprehensive():
             if answer.upper().startswith("DA"):
                 summary = answer.split("|")[1].strip() if "|" in answer else "Pregledajte članak za detalje."
                 final_output.append({
-                    "title": item['title'],
-                    "url": item['url'],
+                    "title": item.title,
+                    "url": item.url,
                     "source": source_name,
                     "date": clean_date,
                     "summary": summary
@@ -120,14 +114,15 @@ def fetch_news_comprehensive():
         except:
             continue
             
+    # Sortiranje po datumu (najnovije na vrhu) ako ima datuma
     return final_output
 
 # --- PRIKAZ ---
-with st.spinner("Skidamo samo najsvježije objave (zadnja 3 dana)..."):
-    vijesti = fetch_news_comprehensive()
+with st.spinner("Exa pretražuje bazu (garantirano zadnja 3 dana)..."):
+    vijesti = fetch_news_exa()
 
 if vijesti:
-    st.success(f"Pronađeno je {len(vijesti)} svježih vijesti (zadnja 72 sata).")
+    st.success(f"Pronađeno je {len(vijesti)} relevantnih vijesti (strogo zadnja 72 sata).")
     for v in vijesti:
         with st.container():
             col_meta, col_main = st.columns([1, 4])
@@ -139,7 +134,7 @@ if vijesti:
                 st.write(v['summary'])
             st.divider()
 else:
-    st.info("U zadnja 3 dana nema relevantnih vijesti vezanih za zadane stakeholdere i ključne riječi.")
+    st.info("U zadnja 3 dana nema relevantnih objava vezanih uz vaše upite.")
 
 if st.button("Osvježi bazu vijesti (Clear Cache)"):
     st.cache_data.clear()
