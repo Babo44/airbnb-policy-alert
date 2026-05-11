@@ -4,15 +4,15 @@ from openai import OpenAI
 from datetime import datetime, timedelta
 
 # --- KONFIGURACIJA STRANICE ---
-st.set_page_config(page_title="Airbnb PA & GR Tracker", page_icon="🏛️", layout="wide")
+st.set_page_config(page_title="Airbnb vijesti", page_icon="🏠", layout="wide")
 
 # --- SUSTAV PRIJAVE (LOGIN) ---
 def check_password():
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
     if not st.session_state["password_correct"]:
-        st.title("🔒 Airbnb PA & GR Portal")
-        password = st.text_input("Unesite lozinku za pristup:", type="password")
+        st.title("🔒 Airbnb vijesti - Prijava")
+        password = st.text_input("Lozinka:", type="password")
         if password:
             if password == st.secrets["APP_PASSWORD"]:
                 st.session_state["password_correct"] = True
@@ -25,103 +25,111 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- INICIJALIZACIJA KLIJENATA ---
+# --- INICIJALIZACIJA ---
 tavily = TavilyClient(api_key=st.secrets["TAVILY_API_KEY"])
 openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-st.title("🏛️ Airbnb Public Affairs & GR Tracker")
-st.markdown(f"**Status:** Monitoring regulatornih kretanja i objava Vlade RH (Zadnja **3 dana**)")
+st.title("🏠 Airbnb vijesti")
+st.markdown("Praćenje stakeholdera, zakona, statistike i kretanja na tržištu nekretnina i turizma.")
 st.divider()
 
-# --- FUNKCIJA ZA PAMETNU PRETRAGU I ANALIZU ---
+# --- FUNKCIJA ZA DOHVAĆANJE ---
 @st.cache_data(ttl=timedelta(hours=6))
-def run_gr_intelligence():
+def fetch_news_comprehensive():
+    # Široka lista upita za sve stakeholdere
     queries = [
-        "Sjednica Nacionalnog vijeća za razvoj turizma Hrvatska vijesti",
-        "Zakon o upravljanju i održavanju zgrada apartmani novosti",
-        "Ministarstvo turizma i sporta Tonči Glavina izjave",
-        "HTZ najnoviji podaci turizam sezona",
+        "Airbnb Hrvatska vijesti",
+        "kratkoročni najam zakoni prijedlozi",
+        "Ministarstvo turizma i sporta Tonči Glavina objave",
+        "HTZ statistika istraživanja turizam",
         "Hrvatska udruga obiteljskog smještaja vijesti",
-        "Porez na nekretnine iznajmljivači najave"
+        "Zajednica obiteljskog turizma HGK",
+        "Porez na nekretnine Hrvatska novosti",
+        "Zakon o ugostiteljskoj djelatnosti izmjene",
+        "Udruga Glas poduzetnika iznajmljivači"
     ]
     
     all_results = []
-    
     for q in queries:
-        # search_depth="advanced" povlači više metapodataka
         search_result = tavily.search(
             query=q, 
             search_depth="advanced", 
-            max_results=5,
-            search_context=True
+            max_results=8, # Povećan broj rezultata
+            include_raw_content=False,
+            include_images=False
         )
         all_results.extend(search_result['results'])
     
-    # Uklanjanje duplikata
+    # Uklanjanje duplikata po URL-u
     unique_results = {res['url']: res for res in all_results}.values()
-    final_alerts = []
     
+    final_output = []
     for item in unique_results:
+        # Ekstrakcija datuma iz Tavily rezultata
+        raw_date = item.get('published_date', None)
+        if raw_date:
+            try:
+                # Pretvaramo ISO format u čitljiv datum
+                clean_date = datetime.fromisoformat(raw_date.replace('Z', '')).strftime('%d.%m.%Y.')
+            except:
+                clean_date = "Nedavno"
+        else:
+            clean_date = "Datum nije naveden"
+
+        source_name = item['url'].split('/')[2].replace('www.', '')
+
         try:
-            # Pokušavamo izvući domenu za izvor ako Tavily ne pošalje eksplicitno
-            source_name = item.get('source', item['url'].split('/')[2].replace('www.', ''))
-            
+            # AI Analiza - sada vrlo popustljiva
             response = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "Ti si Senior Public Affairs Manager za Airbnb. Tvoj zadatak je filtrirati vijesti i dati kratku GR analizu."},
-                    {"role": "user", "content": f"""Analiziraj ovaj tekst. Ako se radi o oglasu ili nebitnoj temi, odgovori 'NE'. 
-                    Ako je vijest bitna i aktualna, odgovori u formatu:
-                    DA | [Kategorija] | [Kratka GR analiza utjecaja na Airbnb]
+                    {"role": "system", "content": "Ti si analitičar vijesti za Airbnb. Tvoj zadatak je filtrirati samo OGLASE. Sve ostale vijesti o turizmu, zakonima, statistici i stakeholderima prihvati."},
+                    {"role": "user", "content": f"""Analiziraj vijest. 
+                    ODBIJ (odgovori samo 'NE') samo ako je riječ o direktnom oglasu za prodaju ili iznajmljivanje konkretnog stana/apartmana.
+                    PRIHVATI sve ostalo (DA | [Kratki sažetak]) ako se radi o: Ministarstvu, HTZ-u, udrugama, zakonima, porezima ili trendovima.
                     
-                    Tekst: {item['title']} - {item['content']}"""}
+                    Naslov: {item['title']}
+                    Sadržaj: {item['content']}"""}
                 ],
-                max_tokens=200,
+                max_tokens=150,
                 temperature=0
             )
             
             answer = response.choices[0].message.content.strip()
             
             if answer.upper().startswith("DA"):
-                parts = answer.split("|")
-                category = parts[1].strip() if len(parts) > 1 else "General"
-                gr_insight = parts[2].strip() if len(parts) > 2 else "Relevantno za poslovanje."
-                
-                final_alerts.append({
+                summary = answer.split("|")[1].strip() if "|" in answer else "Pregledajte članak za detalje."
+                final_output.append({
                     "title": item['title'],
                     "url": item['url'],
                     "source": source_name,
-                    "category": category,
-                    "insight": gr_insight
+                    "date": clean_date,
+                    "summary": summary
                 })
         except:
             continue
             
-    return final_alerts
+    return final_output
 
-# --- PRIKAZ PODATAKA ---
-with st.spinner("Dohvaćam najnovije vijesti i izvore..."):
-    alerts = run_gr_intelligence()
+# --- PRIKAZ ---
+with st.spinner("Prikupljam najnovije vijesti sa svih strana..."):
+    vijesti = fetch_news_comprehensive()
 
-if alerts:
-    st.success(f"Pronađeno {len(alerts)} relevantnih tema u zadnja 3 dana.")
-    for alert in alerts:
+if vijesti:
+    st.success(f"Pronađeno je {len(vijesti)} vijesti u zadnjem periodu.")
+    for v in vijesti:
         with st.container():
-            col1, col2 = st.columns([1, 4])
-            with col1:
-                st.write(f"🏷️ **{alert['category']}**")
-                # Prikaz izvora (domene)
-                st.caption(f"📰 Izvor: **{alert['source']}**")
-                # Datum (Tavily u besplatnoj verziji ponekad ne šalje točan 'published_date', 
-                # pa stavljamo 'Nedavno' ili današnji datum kao referencu za 3-dnevni filter)
-                st.caption(f"📅 Status: **Aktualno**")
-            with col2:
-                st.markdown(f"#### [{alert['title']}]({alert['url']})")
-                st.write(f"🏛️ **GR Analiza:** {alert['insight']}")
+            col_meta, col_main = st.columns([1, 4])
+            with col_meta:
+                st.write(f"📅 {v['date']}")
+                st.caption(f"📰 {v['source']}")
+            with col_main:
+                st.markdown(f"#### [{v['title']}]({v['url']})")
+                st.write(v['summary'])
             st.divider()
 else:
-    st.info("Nema novih kritičnih kretanja u zadnja 3 dana.")
+    st.info("Trenutno nema novih vijesti.")
 
-if st.button("Prisili osvježavanje podataka"):
+if st.button("Osvježi bazu vijesti"):
     st.cache_data.clear()
     st.rerun()
