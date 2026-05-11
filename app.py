@@ -39,16 +39,21 @@ client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # --- DOHVAĆANJE I AI ANALIZA ---
 def fetch_and_analyze_news():
-    # Znatno proširena, profesionalna "mreža" ključnih riječi
+    # Uklonili smo sve navodnike i OR naredbe.
+    # Sada imamo puno jednostavnih upita koje Google News savršeno razumije.
     queries = [
-        # 1. Specifični zakoni
-        '"Zakon o ugostiteljskoj djelatnosti" OR "Zakon o upravljanju i održavanju zgrada" OR "porez na nekretnine"',
-        # 2. Ključni ljudi i institucije
-        '"Tonči Glavina" OR "Ministarstvo turizma" OR "Ministarstvo financija" iznajmljivači',
-        # 3. Udruge i predstavnici
-        '"Udruga obiteljskog smještaja" OR "Zajednica obiteljskog smještaja" OR "Glas poduzetnika" apartmani',
-        # 4. EU direktive i opći pojmovi
-        '"kratkoročni najam" OR Airbnb regulativa OR PWD OR "EU direktiva"'
+        "Zakon o ugostiteljskoj djelatnosti",
+        "Zakon o upravljanju zgradama apartmani",
+        "porez na nekretnine iznajmljivači",
+        "Tonči Glavina turizam",
+        "Ministarstvo turizma iznajmljivači",
+        "kratkoročni najam regulativa",
+        "Airbnb zakon Hrvatska",
+        "obiteljski smještaj porez",
+        "Udruga obiteljskog smještaja",
+        "Zajednica obiteljskog smještaja",
+        "Glas poduzetnika apartmani",
+        "Ministarstvo financija porez nekretnine"
     ]
     
     relevant_news = []
@@ -64,10 +69,10 @@ def fetch_and_analyze_news():
         feed = feedparser.parse(rss_url)
         total_raw_articles += len(feed.entries)
         
-        # Vučemo do 30 vijesti po svakoj od ovih širokih kategorija
-        for entry in feed.entries[:30]:
+        for entry in feed.entries[:20]: # Uzimamo top 20 iz SVAKOG od ovih 12 upita
             link = entry.link
             
+            # Sprječavamo duplikate
             if link in seen_links:
                 continue
             seen_links.add(link)
@@ -77,7 +82,7 @@ def fetch_and_analyze_news():
             if pub_date_parsed:
                 dt_published = datetime.fromtimestamp(time.mktime(pub_date_parsed))
                 if dt_published < seven_days_ago:
-                    continue # AI uopće ne čita ako je starije od 7 dana (štedi tokene)
+                    continue # AI uopće ne čita ako je starije od 7 dana
                 date_str = dt_published.strftime("%d.%m.%Y.")
             else:
                 date_str = "Nepoznat datum"
@@ -112,10 +117,9 @@ def fetch_and_analyze_news():
     return relevant_news, total_raw_articles
 
 # --- PRIKAZ REZULTATA ---
-with st.spinner("Pretražujem web za zadnjih 7 dana i AI analizira sadržaj (ovo bi moglo potrajati 20-ak sekundi zbog šire mreže)..."):
+with st.spinner("Pretražujem web za zadnjih 7 dana i AI analizira sadržaj (prikupljam sirove podatke)..."):
     news_items, raw_count = fetch_and_analyze_news()
 
-# Prikazujemo mali tehnički info
 st.caption(f"*(Detektivski info: Google je ukupno pronašao {raw_count} sirovih vijesti prije vremenskog i AI filtriranja)*")
 
 if news_items:
