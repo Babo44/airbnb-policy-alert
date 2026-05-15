@@ -30,8 +30,8 @@ if not check_password():
 
 openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-st.title("⚡ Airbnb Real-Time Radar (Dijagnostika)")
-st.markdown("Hibridni sustav. Prikazuje strogo **zadnja 3 dana**.")
+st.title("⚡ Airbnb Real-Time Radar (Fokus na svježinu)")
+st.markdown("Pretraga prisiljena na najnovije vijesti. Prikazuje strogo **zadnja 3 dana**.")
 st.divider()
 
 def scrape_article_text(url):
@@ -47,14 +47,16 @@ def scrape_article_text(url):
 
 @st.cache_data(ttl=timedelta(hours=2))
 def fetch_hybrid_news():
+    # Dodali smo šire pojmove (Vlada RH, Sabor, općenito turizam) da uhvatimo dnevnu politiku
     queries = [
         "Airbnb Hrvatska",
         "kratkoročni najam apartmani",
         "Zakon o upravljanju zgradama",
-        "Ministarstvo turizma iznajmljivači",
+        "Ministarstvo turizma",
         "HTZ turizam",
         "porez na nekretnine Hrvatska",
-        "Vlada turizam",
+        "Vlada RH turizam",
+        "Sabor turizam",
         "iznajmljivači"
     ]
     
@@ -62,24 +64,23 @@ def fetch_hybrid_news():
     seen_links = set()
     final_output = []
     
-    # Detektivski brojači
     stats = {"raw": 0, "passed_date": 0, "passed_ai": 0}
     
-    progress_text = "Skeniram portale..."
+    progress_text = "Skeniram najnovije objave s portala..."
     my_bar = st.progress(0, text=progress_text)
     total_queries = len(queries)
 
     for i, query in enumerate(queries):
         my_bar.progress((i + 1) / total_queries, text=f"Tražim: {query}")
         
-        # Maknut when:3d jer može trgati RSS URL
-        encoded_query = urllib.parse.quote_plus(query)
+        # Ovdje je ključ: Dodajemo " when:3d" direktno u upit da Google izbaci stare vijesti
+        encoded_query = urllib.parse.quote_plus(f"{query} when:3d")
         rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=hr&gl=HR&ceid=HR:hr"
         feed = feedparser.parse(rss_url)
         
         stats["raw"] += len(feed.entries)
         
-        for entry in feed.entries[:15]: # Povlačimo malo više po upitu
+        for entry in feed.entries[:15]: 
             link = entry.link
             if link in seen_links:
                 continue
@@ -88,7 +89,7 @@ def fetch_hybrid_news():
             pub_date_parsed = entry.get('published_parsed')
             if pub_date_parsed:
                 dt_published = datetime.fromtimestamp(time.mktime(pub_date_parsed))
-                # STROGI DATUM FILTER
+                # Python osigurač da nešto ipak ne prođe ispod radara
                 if dt_published < tri_dana_unazad:
                     continue
                 date_str = dt_published.strftime("%d.%m.%Y. u %H:%M")
@@ -108,12 +109,12 @@ def fetch_hybrid_news():
                 response = openai_client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
-                        {"role": "system", "content": "Ti si GR analitičar za Airbnb. Tvoj zadatak je filtrirati beskorisne oglase."},
+                        {"role": "system", "content": "Ti si GR analitičar za Airbnb."},
                         {"role": "user", "content": f"""Analiziraj ovu vijest. 
-                        ODBIJ (odgovori samo 'NE') isključivo ako se radi o direktnom oglasu za rezervaciju/prodaju apartmana, crnoj kronici ili sportu.
-                        PRIHVATI apsolutno sve ostalo što ima veze s turizmom, ministarstvom, iznajmljivačima, ekonomijom ili zakonima.
+                        ODBIJ (odgovori samo 'NE') isključivo ako se radi o direktnom oglasu za rezervaciju stana, crnoj kronici ili sportu.
+                        PRIHVATI apsolutno sve ostalo o turizmu, ministarstvu, iznajmljivačima, ekonomiji, Vladi RH ili zakonima.
                         
-                        Ako prihvaćaš, odgovori točno u formatu: DA | [Kategorija] | [Sažetak od 1 rečenice].
+                        Odgovori točno u formatu: DA | [Kategorija] | [Sažetak od 1 rečenice].
                         
                         Naslov: {clean_title}
                         Sadržaj: {article_text}"""}
@@ -146,8 +147,7 @@ def fetch_hybrid_news():
 # --- PRIKAZ REZULTATA ---
 vijesti, statistika = fetch_hybrid_news()
 
-# Ovdje ispisujemo detektivske brojeve!
-st.info(f"🕵️ **Detektivski Info:** Google našao ukupno: **{statistika['raw']}** | Mlađe od 3 dana: **{statistika['passed_date']}** | AI odobrio: **{statistika['passed_ai']}**")
+st.info(f"🕵️ **Detektivski Info:** Google našao: **{statistika['raw']}** | Mlađe od 3 dana: **{statistika['passed_date']}** | AI odobrio: **{statistika['passed_ai']}**")
 
 if vijesti:
     st.success(f"Pronađeno je {len(vijesti)} najnovijih objava (u zadnja 3 dana)!")
@@ -163,7 +163,7 @@ if vijesti:
                 st.write(f"🔎 **Analiza:** {v['summary']}")
             st.divider()
 else:
-    st.warning("Trenutno nema novih vijesti o zadanim temama u zadnja 3 dana.")
+    st.warning("U zadnja 72 sata nitko u medijima nije objavio vijest koja sadrži zadane ključne riječi.")
 
 if st.button("Skeniraj internet odmah (Clear Cache)"):
     st.cache_data.clear()
