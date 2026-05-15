@@ -30,25 +30,21 @@ if not check_password():
 
 openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-st.title("⚡ Airbnb Real-Time Radar")
-st.markdown("Hibridni sustav s pametnim zaobilaženjem *Cookie* zidova. Prikazuje strogo **zadnja 3 dana**.")
+st.title("⚡ Airbnb Real-Time Radar (Dijagnostika)")
+st.markdown("Hibridni sustav. Prikazuje strogo **zadnja 3 dana**.")
 st.divider()
 
-# --- POMOĆNA FUNKCIJA ZA ČITANJE PORTALA ---
 def scrape_article_text(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         response = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(response.content, 'html.parser')
-        
         paragraphs = soup.find_all('p')
         text = " ".join([p.get_text() for p in paragraphs])
-        
         return text[:1500] if text else "Nema teksta."
     except:
         return "Nije moguće pročitati tekst."
 
-# --- GLAVNI MOTOR ---
 @st.cache_data(ttl=timedelta(hours=2))
 def fetch_hybrid_news():
     queries = [
@@ -57,8 +53,8 @@ def fetch_hybrid_news():
         "Zakon o upravljanju zgradama",
         "Ministarstvo turizma iznajmljivači",
         "HTZ turizam",
-        "porez na nekretnine Hrvatska"
-        "Vlada turizam"
+        "porez na nekretnine Hrvatska",
+        "Vlada turizam",
         "iznajmljivači"
     ]
     
@@ -66,19 +62,24 @@ def fetch_hybrid_news():
     seen_links = set()
     final_output = []
     
-    progress_text = "Skeniram portale i razbijam Cookie zidove..."
+    # Detektivski brojači
+    stats = {"raw": 0, "passed_date": 0, "passed_ai": 0}
+    
+    progress_text = "Skeniram portale..."
     my_bar = st.progress(0, text=progress_text)
     total_queries = len(queries)
 
     for i, query in enumerate(queries):
         my_bar.progress((i + 1) / total_queries, text=f"Tražim: {query}")
         
-        # Dodali smo 'when:3d' direktno u Google upit da Google sam filtrira stare vijesti!
-        encoded_query = urllib.parse.quote_plus(f"{query} when:3d")
+        # Maknut when:3d jer može trgati RSS URL
+        encoded_query = urllib.parse.quote_plus(query)
         rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=hr&gl=HR&ceid=HR:hr"
         feed = feedparser.parse(rss_url)
         
-        for entry in feed.entries[:10]:
+        stats["raw"] += len(feed.entries)
+        
+        for entry in feed.entries[:15]: # Povlačimo malo više po upitu
             link = entry.link
             if link in seen_links:
                 continue
@@ -87,23 +88,22 @@ def fetch_hybrid_news():
             pub_date_parsed = entry.get('published_parsed')
             if pub_date_parsed:
                 dt_published = datetime.fromtimestamp(time.mktime(pub_date_parsed))
+                # STROGI DATUM FILTER
                 if dt_published < tri_dana_unazad:
                     continue
                 date_str = dt_published.strftime("%d.%m.%Y. u %H:%M")
             else:
                 continue
+                
+            stats["passed_date"] += 1
 
-            # Pokušaj pročitati tekst
             article_text = scrape_article_text(link)
-            
-            # ANTI-COOKIE ZID DETEKTOR: Ako tekst spominje kolačiće ili pretplatu, baci ga i uzmi Googleov sažetak
             if len(article_text) < 100 or "kolačić" in article_text.lower() or "cookie" in article_text.lower() or "pretplatite" in article_text.lower():
                 article_text = entry.get('description', entry.title)
 
             source = entry.title.rsplit(" - ", 1)[1] if " - " in entry.title else "Nepoznat izvor"
             clean_title = entry.title.rsplit(" - ", 1)[0] if " - " in entry.title else entry.title
 
-            # --- AI ANALIZA ---
             try:
                 response = openai_client.chat.completions.create(
                     model="gpt-4o-mini",
@@ -111,10 +111,9 @@ def fetch_hybrid_news():
                         {"role": "system", "content": "Ti si GR analitičar za Airbnb. Tvoj zadatak je filtrirati beskorisne oglase."},
                         {"role": "user", "content": f"""Analiziraj ovu vijest. 
                         ODBIJ (odgovori samo 'NE') isključivo ako se radi o direktnom oglasu za rezervaciju/prodaju apartmana, crnoj kronici ili sportu.
-                        PRIHVATI apsolutno sve ostalo što ima veze s turizmom, ministarstvom, iznajmljivačima ili zakonima.
-                        Ako je tekst i dalje samo o kolačićima (cookies), zanemari tekst i donesi odluku na temelju NASLOVA.
+                        PRIHVATI apsolutno sve ostalo što ima veze s turizmom, ministarstvom, iznajmljivačima, ekonomijom ili zakonima.
                         
-                        Ako prihvaćaš, odgovori točno u formatu: DA | [Kategorija: npr. Turizam/Zakon/Statistika] | [Sažetak od 1 rečenice].
+                        Ako prihvaćaš, odgovori točno u formatu: DA | [Kategorija] | [Sažetak od 1 rečenice].
                         
                         Naslov: {clean_title}
                         Sadržaj: {article_text}"""}
@@ -126,6 +125,7 @@ def fetch_hybrid_news():
                 answer = response.choices[0].message.content.strip()
                 
                 if answer.upper().startswith("DA"):
+                    stats["passed_ai"] += 1
                     parts = answer.split("|")
                     category = parts[1].strip() if len(parts) > 1 else "Turizam"
                     summary = parts[2].strip() if len(parts) > 2 else "Relevantna vijest o turizmu."
@@ -141,10 +141,13 @@ def fetch_hybrid_news():
         
     my_bar.empty()
     final_output.sort(key=lambda x: x['dt'], reverse=True)
-    return final_output
+    return final_output, stats
 
 # --- PRIKAZ REZULTATA ---
-vijesti = fetch_hybrid_news()
+vijesti, statistika = fetch_hybrid_news()
+
+# Ovdje ispisujemo detektivske brojeve!
+st.info(f"🕵️ **Detektivski Info:** Google našao ukupno: **{statistika['raw']}** | Mlađe od 3 dana: **{statistika['passed_date']}** | AI odobrio: **{statistika['passed_ai']}**")
 
 if vijesti:
     st.success(f"Pronađeno je {len(vijesti)} najnovijih objava (u zadnja 3 dana)!")
@@ -160,7 +163,7 @@ if vijesti:
                 st.write(f"🔎 **Analiza:** {v['summary']}")
             st.divider()
 else:
-    st.warning("Trenutno nema novih vijesti o zadanim temama u zadnja 3 dana. (Pokušajte ponovno sutra).")
+    st.warning("Trenutno nema novih vijesti o zadanim temama u zadnja 3 dana.")
 
 if st.button("Skeniraj internet odmah (Clear Cache)"):
     st.cache_data.clear()
