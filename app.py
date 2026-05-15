@@ -91,4 +91,12 @@ def fetch_hybrid_news():
 
             pub_date_parsed = entry.get('published_parsed')
             if pub_date_parsed:
-                dt_published = datetime.from
+               pub_date_parsed = entry.get('published_parsed')
+            if pub_date_parsed:
+                dt_published = datetime.fromtimestamp(time.mktime(pub_date_parsed))
+                # STROGI PYTHON FILTER DATUMA (Odbacuje sve starije od 3 dana)
+                if dt_published < tri_dana_unazad:
+                    continue
+                date_str = dt_published.strftime("%d.%m.%Y. u %H:%M")
+            else:
+                continue
