@@ -48,7 +48,6 @@ def scrape_article_text(url):
 
 @st.cache_data(ttl=timedelta(hours=2))
 def fetch_hybrid_news():
-    # Ažurirana lista ključnih riječi s novim upitima
     queries = [
         "Airbnb Hrvatska",
         "kratkoročni najam apartmani",
@@ -75,11 +74,9 @@ def fetch_hybrid_news():
         my_bar.progress((i + 1) / total_queries, text=f"Tražim: {query}")
         
         encoded_query = urllib.parse.quote_plus(query)
-        # TAJNI PARAMETAR: &tbs=sbd:1 sortira rezultate striktno po vremenu objave (od najnovijeg)
         rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=hr&gl=HR&ceid=HR:hr&tbs=sbd:1"
         feed = feedparser.parse(rss_url)
         
-        # Vučemo maksimalnih 100 rezultata po upitu umjesto 60!
         entries = feed.entries[:100]
         stats["raw"] += len(entries)
         
@@ -91,12 +88,81 @@ def fetch_hybrid_news():
 
             pub_date_parsed = entry.get('published_parsed')
             if pub_date_parsed:
-               pub_date_parsed = entry.get('published_parsed')
-            if pub_date_parsed:
                 dt_published = datetime.fromtimestamp(time.mktime(pub_date_parsed))
-                # STROGI PYTHON FILTER DATUMA (Odbacuje sve starije od 3 dana)
                 if dt_published < tri_dana_unazad:
                     continue
                 date_str = dt_published.strftime("%d.%m.%Y. u %H:%M")
             else:
                 continue
+                
+            stats["passed_date"] += 1
+
+            article_text = scrape_article_text(link)
+            if len(article_text) < 100 or "kolačić" in article_text.lower() or "cookie" in article_text.lower() or "pretplatite" in article_text.lower():
+                article_text = entry.get('description', entry.title)
+
+            source = entry.title.rsplit(" - ", 1)[1] if " - " in entry.title else "Nepoznat izvor"
+            clean_title = entry.title.rsplit(" - ", 1)[0] if " - " in entry.title else entry.title
+
+            try:
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "Ti si GR analitičar za Airbnb."},
+                        {"role": "user", "content": f"""Analiziraj ovu vijest. 
+                        ODBIJ (odgovori samo 'NE') isključivo ako se radi o direktnom oglasu, crnoj kronici, sportu ili čistoj zabavi.
+                        PRIHVATI apsolutno sve ostalo o turizmu, ekonomiji, Vladi RH, iznajmljivačima, zakonima ili lokalnoj politici.
+                        
+                        Odgovori točno u formatu: DA | [Kategorija] | [Sažetak od 1 rečenice].
+                        
+                        Naslov: {clean_title}
+                        Sadržaj: {article_text}"""}
+                    ],
+                    max_tokens=150,
+                    temperature=0
+                )
+                
+                answer = response.choices[0].message.content.strip()
+                
+                if answer.upper().startswith("DA"):
+                    stats["passed_ai"] += 1
+                    parts = answer.split("|")
+                    category = parts[1].strip() if len(parts) > 1 else "Turizam"
+                    summary = parts[2].strip() if len(parts) > 2 else "Relevantna vijest."
+                    
+                    final_output.append({
+                        "title": clean_title, "link": link, "source": source, 
+                        "date": date_str, "category": category, "summary": summary, "dt": dt_published
+                    })
+            except:
+                pass
+                
+    my_bar.empty()
+    final_output.sort(key=lambda x: x['dt'], reverse=True)
+    return final_output, stats
+
+# --- PRIKAZ REZULTATA ---
+with st.spinner("Provjeravam stotine najnovijih objava, molimo pričekajte..."):
+    vijesti, statistika = fetch_hybrid_news()
+
+st.info(f"🕵️ **Detektivski Info:** Ukupno pretraženo članaka: **{statistika['raw']}** | Pronađeno mlađe od 3 dana: **{statistika['passed_date']}** | AI odobrio za prikaz: **{statistika['passed_ai']}**")
+
+if vijesti:
+    st.success(f"Pronađeno je {len(vijesti)} najnovijih objava (u zadnja 3 dana)!")
+    for v in vijesti:
+        with st.container():
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                st.write(f"🏷️ **{v['category']}**")
+                st.caption(f"📰 Izvor: **{v['source']}**")
+                st.caption(f"🕒 {v['date']}")
+            with col2:
+                st.markdown(f"#### [{v['title']}]({v['link']})")
+                st.write(f"🔎 **Analiza:** {v['summary']}")
+            st.divider()
+else:
+    st.warning("U zadnja 72 sata nismo uspjeli pronaći relevantne vijesti o zadanim temama. Sustav je čist.")
+
+if st.button("Skeniraj internet odmah (Clear Cache)"):
+    st.cache_data.clear()
+    st.rerun()
