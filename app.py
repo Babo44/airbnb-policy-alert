@@ -1,20 +1,17 @@
 import streamlit as st
-import feedparser
-import urllib.parse
-import requests
-from bs4 import BeautifulSoup
+from exa_py import Exa
 from openai import OpenAI
 from datetime import datetime, timedelta
-import time
 
-# --- KONFIGURACIJA ---
-st.set_page_config(page_title="Airbnb Real-Time GR", page_icon="⚡", layout="wide")
+# --- KONFIGURACIJA STRANICE ---
+st.set_page_config(page_title="Airbnb GR Radar", page_icon="🏛️", layout="wide")
 
+# --- SUSTAV PRIJAVE (LOGIN) ---
 def check_password():
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
     if not st.session_state["password_correct"]:
-        st.title("🔒 Airbnb Real-Time Radar")
+        st.title("🔒 Airbnb GR Radar - Prijava")
         password = st.text_input("Lozinka:", type="password")
         if password:
             if password == st.secrets["APP_PASSWORD"]:
@@ -28,141 +25,132 @@ def check_password():
 if not check_password():
     st.stop()
 
+# --- INICIJALIZACIJA KLIJENATA ---
+exa = Exa(api_key=st.secrets["EXA_API_KEY"])
 openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-st.title("⚡ Airbnb Real-Time Radar (Najnovije vijesti)")
-st.markdown("Sustav forsira kronološki prikaz i filtrira isključivo **zadnja 3 dana**.")
+st.title("🏛️ Airbnb GR Radar (Exa Engine)")
+st.markdown("Pametna semantička pretraga weba. **Exa API osigurava striktne datume (zadnja 3 dana).**")
 st.divider()
 
-def scrape_article_text(url):
-    """Funkcija za čitanje teksta s portala uz zaobilaženje osnovnih prepreka."""
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        response = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(response.content, 'html.parser')
-        paragraphs = soup.find_all('p')
-        text = " ".join([p.get_text() for p in paragraphs])
-        return text[:1500] if text else "Nema teksta."
-    except:
-        return "Nije moguće pročitati tekst."
-
-@st.cache_data(ttl=timedelta(hours=2))
-def fetch_hybrid_news():
+# --- FUNKCIJA ZA DOHVAĆANJE (EXA MOTOR) ---
+@st.cache_data(ttl=timedelta(hours=4))
+def fetch_news_exa():
+    # Poboljšani i prošireni upiti za Exa semantičku tražilicu
     queries = [
-        "Airbnb Hrvatska",
-        "kratkoročni najam apartmani",
-        "Zakon o upravljanju zgradama",
-        "Ministarstvo turizma iznajmljivači",
-        "HTZ turizam",
-        "porez na nekretnine Hrvatska",
-        "vijesti turizam Hrvatska danas",
-        "Vlada turizam",
-        "iznajmljivači"
+        "Airbnb Hrvatska kratkoročni najam",
+        "Zakon o upravljanju i održavanju zgrada suglasnost",
+        "Ministarstvo turizma i sporta ministar Tonči Glavina",
+        "HTZ statistika turizam sezona",
+        "Hrvatska udruga obiteljskog smještaja iznajmljivači",
+        "porez na nekretnine Hrvatska najave",
+        "Vlada RH turizam odluke",
+        "vijesti turizam Hrvatska danas"
     ]
     
+    # Računamo točan datum od prije 3 dana u formatu koji Exa razumije (YYYY-MM-DD)
     tri_dana_unazad = datetime.now() - timedelta(days=3)
-    seen_links = set()
-    final_output = []
+    start_date_str = tri_dana_unazad.strftime('%Y-%m-%d')
     
-    stats = {"raw": 0, "passed_date": 0, "passed_ai": 0}
+    all_results = []
     
-    progress_text = "Skeniram najnovije objave s portala..."
+    progress_text = "Exa pretražuje web bazu..."
     my_bar = st.progress(0, text=progress_text)
     total_queries = len(queries)
+    
+    for i, q in enumerate(queries):
+        my_bar.progress((i + 1) / total_queries, text=f"Exa analizira: {q}")
+        try:
+            search_response = exa.search_and_contents(
+                q,
+                type="neural",
+                num_results=10, # Povećano na 10 rezultata po upitu za bolji ulov
+                start_published_date=start_date_str
+            )
+            all_results.extend(search_response.results)
+        except Exception as e:
+            continue
 
-    for i, query in enumerate(queries):
-        my_bar.progress((i + 1) / total_queries, text=f"Tražim: {query}")
-        
-        encoded_query = urllib.parse.quote_plus(query)
-        rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=hr&gl=HR&ceid=HR:hr&tbs=sbd:1"
-        feed = feedparser.parse(rss_url)
-        
-        entries = feed.entries[:100]
-        stats["raw"] += len(entries)
-        
-        for entry in entries: 
-            link = entry.link
-            if link in seen_links:
-                continue
-            seen_links.add(link)
-
-            pub_date_parsed = entry.get('published_parsed')
-            if pub_date_parsed:
-                dt_published = datetime.fromtimestamp(time.mktime(pub_date_parsed))
-                if dt_published < tri_dana_unazad:
-                    continue
-                date_str = dt_published.strftime("%d.%m.%Y. u %H:%M")
-            else:
-                continue
-                
-            stats["passed_date"] += 1
-
-            article_text = scrape_article_text(link)
-            if len(article_text) < 100 or "kolačić" in article_text.lower() or "cookie" in article_text.lower() or "pretplatite" in article_text.lower():
-                article_text = entry.get('description', entry.title)
-
-            source = entry.title.rsplit(" - ", 1)[1] if " - " in entry.title else "Nepoznat izvor"
-            clean_title = entry.title.rsplit(" - ", 1)[0] if " - " in entry.title else entry.title
-
-            try:
-                response = openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "Ti si GR analitičar za Airbnb."},
-                        {"role": "user", "content": f"""Analiziraj ovu vijest. 
-                        ODBIJ (odgovori samo 'NE') isključivo ako se radi o direktnom oglasu, crnoj kronici, sportu ili čistoj zabavi.
-                        PRIHVATI apsolutno sve ostalo o turizmu, ekonomiji, Vladi RH, iznajmljivačima, zakonima ili lokalnoj politici.
-                        
-                        Odgovori točno u formatu: DA | [Kategorija] | [Sažetak od 1 rečenice].
-                        
-                        Naslov: {clean_title}
-                        Sadržaj: {article_text}"""}
-                    ],
-                    max_tokens=150,
-                    temperature=0
-                )
-                
-                answer = response.choices[0].message.content.strip()
-                
-                if answer.upper().startswith("DA"):
-                    stats["passed_ai"] += 1
-                    parts = answer.split("|")
-                    category = parts[1].strip() if len(parts) > 1 else "Turizam"
-                    summary = parts[2].strip() if len(parts) > 2 else "Relevantna vijest."
-                    
-                    final_output.append({
-                        "title": clean_title, "link": link, "source": source, 
-                        "date": date_str, "category": category, "summary": summary, "dt": dt_published
-                    })
-            except:
-                pass
-                
     my_bar.empty()
-    final_output.sort(key=lambda x: x['dt'], reverse=True)
-    return final_output, stats
 
-# --- PRIKAZ REZULTATA ---
-with st.spinner("Provjeravam stotine najnovijih objava, molimo pričekajte..."):
-    vijesti, statistika = fetch_hybrid_news()
+    # Uklanjanje duplikata po URL-u
+    unique_results = {res.url: res for res in all_results}.values()
+    final_output = []
+    
+    for item in unique_results:
+        # Exa šalje uredan datum objave
+        raw_date = item.published_date
+        dt_obj = None
+        if raw_date:
+            try:
+                dt_obj = datetime.fromisoformat(raw_date.replace('Z', '').split('T')[0])
+                clean_date = dt_obj.strftime('%d.%m.%Y.')
+            except:
+                clean_date = "Unutar zadnja 3 dana"
+        else:
+            clean_date = "Unutar zadnja 3 dana"
 
-st.info(f"🕵️ **Detektivski Info:** Ukupno pretraženo članaka: **{statistika['raw']}** | Pronađeno mlađe od 3 dana: **{statistika['passed_date']}** | AI odobrio za prikaz: **{statistika['passed_ai']}**")
+        source_name = item.url.split('/')[2].replace('www.', '')
+
+        # --- AI FILTER ---
+        try:
+            response = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Ti si GR analitičar za Airbnb."},
+                    {"role": "user", "content": f"""Analiziraj ovu vijest. 
+                    ODBIJ (odgovori samo 'NE') ISKLJUČIVO ako se radi o direktnom oglasu za prodaju ili iznajmljivanje stana (Booking, Njuškalo, agencije), crnoj kronici ili sportu.
+                    PRIHVATI sve ostale vijesti koje se tiču turizma, zakona, vlade, poreza ili stakeholdera u formatu: DA | [Kategorija] | [Kratki, informativni sažetak od 1-2 rečenice].
+                    
+                    Naslov: {item.title}
+                    Sadržaj: {item.text}"""} 
+                ],
+                max_tokens=150,
+                temperature=0
+            )
+            
+            answer = response.choices[0].message.content.strip()
+            
+            if answer.upper().startswith("DA"):
+                parts = answer.split("|")
+                category = parts[1].strip() if len(parts) > 1 else "Turizam"
+                summary = parts[2].strip() if len(parts) > 2 else "Pregledajte članak za detalje."
+                
+                final_output.append({
+                    "title": item.title,
+                    "url": item.url,
+                    "source": source_name,
+                    "date": clean_date,
+                    "summary": summary,
+                    "dt_obj": dt_obj or datetime.now()
+                })
+        except:
+            continue
+            
+    # Sortiranje po datumu (najnovije na vrhu)
+    final_output.sort(key=lambda x: x['dt_obj'], reverse=True)
+    return final_output
+
+# --- PRIKAZ ---
+with st.spinner("Exa inteligencija obrađuje podatke..."):
+    vijesti = fetch_news_exa()
 
 if vijesti:
-    st.success(f"Pronađeno je {len(vijesti)} najnovijih objava (u zadnja 3 dana)!")
+    st.success(f"Pronađeno je {len(vijesti)} relevantnih vijesti (strogo zadnja 72 sata).")
     for v in vijesti:
         with st.container():
-            col1, col2 = st.columns([1, 4])
-            with col1:
+            col_meta, col_main = st.columns([1, 4])
+            with col_meta:
                 st.write(f"🏷️ **{v['category']}**")
-                st.caption(f"📰 Izvor: **{v['source']}**")
-                st.caption(f"🕒 {v['date']}")
-            with col2:
-                st.markdown(f"#### [{v['title']}]({v['link']})")
+                st.write(f"📅 **{v['date']}**")
+                st.caption(f"📰 {v['source']}")
+            with col_main:
+                st.markdown(f"#### [{v['title']}]({v['url']})")
                 st.write(f"🔎 **Analiza:** {v['summary']}")
             st.divider()
 else:
-    st.warning("U zadnja 72 sata nismo uspjeli pronaći relevantne vijesti o zadanim temama. Sustav je čist.")
+    st.info("U zadnja 3 dana Exa nije pronašla relevantne objave vezane uz vaše upite.")
 
-if st.button("Skeniraj internet odmah (Clear Cache)"):
+if st.button("Osvježi bazu vijesti (Clear Cache)"):
     st.cache_data.clear()
     st.rerun()
