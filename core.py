@@ -262,7 +262,47 @@ def _client():
 
 
 def _model():
+    """Model za pretragu (CLAUDE_MODEL)."""
     return os.environ.get("CLAUDE_MODEL") or "claude-haiku-5-5"
+
+
+def _model_ocjena():
+    """Model za jednostavno ocjenjivanje RSS naslova (CLAUDE_MODEL_OCJENA)."""
+    return os.environ.get("CLAUDE_MODEL_OCJENA") or "claude-haiku-5-5"
+
+
+# Cijene u $ po milijunu tokena (ulaz, izlaz), prema platform.claude.com/docs/about-claude/pricing.
+# Haiku 5.5 ima vise cijene za upite iznad 100.000 tokena; ovdje je osnovna.
+CIJENE = {
+    "claude-opus-5-5": (4.0, 20.0),
+    "claude-sonnet-5-5": (2.0, 10.0),
+    "claude-haiku-5-5": (0.10, 0.50),
+}
+CIJENA_PRETRAGE = 0.01
+POTROSNJA = {}  # model -> {"ulaz": n, "izlaz": n, "pretrage": n}
+
+
+def _zabiljezi(model, usage, pretrage):
+    p = POTROSNJA.setdefault(model, {"ulaz": 0, "izlaz": 0, "pretrage": 0})
+    p["ulaz"] += (getattr(usage, "input_tokens", 0) or 0) \
+        + (getattr(usage, "cache_read_input_tokens", 0) or 0) \
+        + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
+    p["izlaz"] += getattr(usage, "output_tokens", 0) or 0
+    p["pretrage"] += pretrage
+
+
+def sazetak_potrosnje():
+    redovi, ukupno = [], 0.0
+    for model, p in POTROSNJA.items():
+        ul, iz = CIJENE.get(model, (None, None))
+        if ul is None:
+            redovi.append(f"{model}: ulaz {p['ulaz']:,} tok, izlaz {p['izlaz']:,} tok, pretraga {p['pretrage']} (cijena nepoznata)")
+            continue
+        trosak = p["ulaz"] / 1e6 * ul + p["izlaz"] / 1e6 * iz + p["pretrage"] * CIJENA_PRETRAGE
+        ukupno += trosak
+        redovi.append(f"{model}: ulaz {p['ulaz']:,} tok, izlaz {p['izlaz']:,} tok, pretraga {p['pretrage']}, ~{trosak:.3f} $")
+    redovi.append(f"Procijenjeni trošak pokretanja: ~{ukupno:.3f} $ (dvaput dnevno ~{ukupno * 60:.0f} $ mjesečno)")
+    return redovi
 
 
 def alat_pretraga(max_uses, allowed=None):
@@ -279,12 +319,16 @@ def alat_dohvat(max_uses, allowed):
     return {"type": WEB_FETCH, "name": "web_fetch", "max_uses": max_uses, "allowed_domains": allowed}
 
 
-def claude_poziv(prompt, tools=None, max_tokens=8000):
+ZADNJI_POZIV = {}
+
+
+def claude_poziv(prompt, tools=None, max_tokens=8000, model=None):
     """Vraca (tekst, viđeni_url-ovi, broj_pretraga)."""
     client = _client()
+    model = model or _model()
     messages = [{"role": "user", "content": prompt}]
     tekst, urls, pretrage = [], set(), 0
-    kwargs = {"model": _model(), "max_tokens": max_tokens}
+    kwargs = {"model": model, "max_tokens": max_tokens}
     if tools:
         kwargs["tools"] = tools
         if any(t["type"] == WEB_FETCH for t in tools):
@@ -294,8 +338,9 @@ def claude_poziv(prompt, tools=None, max_tokens=8000):
     for _ in range(4):  # nastavak ako API vrati pause_turn
         resp = client.messages.create(messages=messages, **kwargs)
         u = getattr(resp.usage, "server_tool_use", None)
-        if u is not None:
-            pretrage += getattr(u, "web_search_requests", 0) or 0
+        n_poziv = (getattr(u, "web_search_requests", 0) or 0) if u is not None else 0
+        pretrage += n_poziv
+        _zabiljezi(model, resp.usage, n_poziv)
         for b in resp.content:
             if b.type == "text":
                 tekst.append(b.text)
@@ -311,10 +356,18 @@ def claude_poziv(prompt, tools=None, max_tokens=8000):
             messages = [messages[0], {"role": "assistant", "content": asistent}]
             continue
         break
+    ZADNJI_POZIV.update(stop=resp.stop_reason, tekst="\n".join(tekst), urls=len(urls))
     return "\n".join(tekst), urls, pretrage
 
 
 # ---------- KRUGOVI PRETRAGE ----------
+
+def napomena(oznaka):
+    """Kratki opis zadnjeg odgovora kad iz njega nije izvucena nijedna stavka."""
+    t = (ZADNJI_POZIV.get("tekst") or "").strip().replace("\n", " ")
+    return (f"{oznaka}: 0 stavki (stop={ZADNJI_POZIV.get('stop')}, rezultata pretrage={ZADNJI_POZIV.get('urls')}) "
+            f"pocetak odgovora: {t[:160]!r} ... kraj: {t[-160:]!r}")
+
 
 def _uvod(start, today):
     return (
@@ -397,7 +450,10 @@ Odgovori ISKLJUČIVO JSON poljem:
         alat_dohvat(DOHVACANJA_INSTITUCIJE, INSTITUCIJE_DOMENE),
     ]
     tekst, urls, n = claude_poziv(prompt, tools, max_tokens=12000)
-    return _json_iz_teksta(tekst), urls, n
+    sirove = _json_iz_teksta(tekst)
+    if not sirove:
+        print(napomena("institucije"))
+    return sirove, urls, n
 
 
 def institucije_za_klijenta(sirove, key):
@@ -454,7 +510,7 @@ Ocijeni ove naslove s Index.hr (broj. naslov | opis):
 
 Odgovori ISKLJUČIVO JSON poljem, samo za stavke s relevantnošću 2 ili više:
 [{{"i": broj, "relevantnost": 1-5, "zemlja": "HR|BA|ME|EU|OSTALO", "oznaka": "Nabava|Javno savjetovanje|", "sazetak": "2 rečenice na hrvatskom"}}]"""
-    tekst, _, _ = claude_poziv(prompt, max_tokens=4000)
+    tekst, _, _ = claude_poziv(prompt, max_tokens=4000, model=_model_ocjena())
     out = []
     for d in _json_iz_teksta(tekst):
         try:
@@ -470,19 +526,26 @@ Odgovori ISKLJUČIVO JSON poljem, samo za stavke s relevantnošću 2 ili više:
 # ---------- PROVJERA ----------
 
 def _provjeri(s, vidjeni, start, today):
+    """Vraca (stavka, None) ili (None, razlog)."""
     postoji, d_stranica = _datum_sa_stranice(s["url"])
     if not postoji and _norm_url(s["url"]) not in vidjeni:
-        return None  # nedostupno i nije iz rezultata pretrage: moguće izmišljen URL
+        return None, "url"  # nedostupno i nije iz rezultata pretrage: moguće izmišljen URL
     d = d_stranica or parse_date(s["datum"])
-    if not d or d < start or d > today:
-        return None
-    return {**s, "datum": d.isoformat()}
+    if not d:
+        return None, "bez datuma"
+    if d < start or d > today:
+        return None, f"datum {d:%d.%m.%Y.}"
+    return {**s, "datum": d.isoformat()}, None
 
 
-def provjeri_sve(stavke, vidjeni, start, today):
+def provjeri_sve(stavke, vidjeni, start, today, odbaceno=None):
     with ThreadPoolExecutor(max_workers=8) as ex:
         rez = list(ex.map(lambda s: _provjeri(s, vidjeni, start, today), stavke))
-    return [r for r in rez if r]
+    if odbaceno is not None:
+        for s, (_, razlog) in zip(stavke, rez):
+            if razlog:
+                odbaceno.append(f"{razlog}: {s['url']}")
+    return [r for r, _ in rez if r]
 
 
 def spoji(*liste):
@@ -499,9 +562,12 @@ def obradi_klijenta(key, start, today, inst_sirove, inst_urls, svi_rss):
     cfg = CLIENTS[key]
     greske, pretrage = [], 0
     k1, u1, k2, u2 = [], set(), [], set()
+    napomene = []
     try:
         k1, u1, n = krug1(cfg, start, today)
         pretrage += n
+        if not k1:
+            napomene.append(napomena("krug 1"))
     except Exception as e:
         greske.append(f"krug 1: {e}")
     try:
@@ -518,8 +584,15 @@ def obradi_klijenta(key, start, today, inst_sirove, inst_urls, svi_rss):
 
     sve = spoji(k1, k2, k_rss, k_inst)
     vidjeni = u1 | u2 | inst_urls | {_norm_url(s["url"]) for s in k_rss}
-    provjerene = [s for s in provjeri_sve(sve, vidjeni, start, today) if s["relevantnost"] >= MIN_RELEVANTNOST]
-    stats = {"pronadeno": len(sve), "spremljeno": len(provjerene), "pretrage": pretrage}
+    odbaceno = []
+    prosle = provjeri_sve(sve, vidjeni, start, today, odbaceno)
+    provjerene = [s for s in prosle if s["relevantnost"] >= MIN_RELEVANTNOST]
+    stats = {
+        "pronadeno": len(sve), "spremljeno": len(provjerene), "pretrage": pretrage,
+        "koraci": (f"krug1 {len(k1)}, krug2 {len(k2)}, RSS {len(k_rss)}, institucije {len(k_inst)} | "
+                   f"odbačeno provjerom {len(odbaceno)}, ispod praga {len(prosle) - len(provjerene)}"),
+        "odbaceno": odbaceno, "napomene": napomene,
+    }
     return provjerene, stats, greske
 
 
