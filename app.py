@@ -114,7 +114,16 @@ setInterval(draw, 50);
 </body></html>
 """
 
-components.html(HERO.replace("__BG__", bg_url), height=380)
+st.markdown("""
+<div style="padding: 3rem 0 1.5rem 0;">
+  <div style="font-family: monospace; font-size: 12px; letter-spacing: .2em; color: #62C6C4;">ZBT CONSULTING · INTERNI ALAT</div>
+  <h1 style="color:#FFFFFF; font-size:44px; margin:10px 0 8px; font-weight:700;">Praćenje vijesti</h1>
+  <p style="color:#CBD5E1; font-size:15px; max-width:560px;">Javne politike, nabave i akteri u Hrvatskoj, BiH i Crnoj Gori, na jednom mjestu.</p>
+  <div style="margin-top:24px; padding-top:14px; border-top:1px solid rgba(148,163,184,.3); color:#E2E8F0; font-size:13px;">
+    Izradio <b style="color:#fff">Marin Pepić</b>, Account Manager, ZBT Consulting
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
 st.write("")
 
