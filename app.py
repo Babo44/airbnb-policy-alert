@@ -1,8 +1,9 @@
 import streamlit as st
 import streamlit.components.v1 as components
-from utils import start
+from utils import pristupni_kljuc, start
 
 start()
+KLJUC = pristupni_kljuc()
 
 # Kisa u pozadini: iframe se rasteze preko cijelog ekrana i ide iza sadrzaja
 components.html("""
@@ -84,7 +85,7 @@ cols = st.columns(3)
 for i, (naziv, url, opis) in enumerate(NAV):
     with cols[i % 3]:
         st.markdown(
-            f'<a href="/{url}" target="_self" class="zbt-card">'
+            f'<a href="/{url}?k={KLJUC}" target="_self" class="zbt-card">'
             f'<span class="zbt-title">{naziv}</span>'
             f'<span class="zbt-desc">{opis}</span></a>',
             unsafe_allow_html=True,
