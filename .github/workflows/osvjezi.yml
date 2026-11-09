@@ -1,11 +1,11 @@
 name: Osvjezavanje vijesti
 
 on:
-  schedule:
-    # Vrijeme je u UTC. 05:17 UTC = 06:17 zimi / 07:17 ljeti po zagrebackom vremenu.
-    - cron: "17 5 * * *"
-    # 12:17 UTC = 13:17 zimi / 14:17 ljeti.
-    - cron: "17 12 * * *"
+    schedule:
+    # Vrijeme je u UTC. 08:00 UTC = 09:00 zimi / 10:00 ljeti po zagrebačkom vremenu.
+    - cron: "0 8 * * *"
+    # 13:00 UTC = 14:00 zimi / 15:00 ljeti.
+    - cron: "0 13 * * *"
   workflow_dispatch: {}
 
 jobs:
