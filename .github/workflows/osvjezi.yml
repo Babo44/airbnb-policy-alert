@@ -17,11 +17,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install anthropic requests
-      - run: python osvjezi.py
+      - run: pip install anthropic requests exa_py
+      - run: python -u osvjezi.py
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
-          CLAUDE_MODEL_OCJENA: ${{ vars.CLAUDE_MODEL_OCJENA }}
