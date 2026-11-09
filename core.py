@@ -200,6 +200,70 @@ META_RE = re.compile(
 )
 JSONLD_RE = re.compile(r'"datePublished"\s*:\s*"([^"]+)"')
 TIME_RE = re.compile(r'<time[^>]+datetime=["\']([^"\']+)["\']', re.I)
+META_RE2 = re.compile(
+    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*(?:property|name|itemprop)=["\']'
+    r'(?:article:published_time|og:published_time|datePublished|pubdate)["\']',
+    re.I,
+)
+URL_DATUM_RE = [
+    re.compile(r'/(20\d{2})[/-](\d{1,2})[/-](\d{1,2})(?:[/-]|$)'),
+    re.compile(r'(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)'),
+]
+MJESECI = {
+    "siječnja": 1, "veljače": 2, "ožujka": 3, "travnja": 4, "svibnja": 5, "lipnja": 6,
+    "srpnja": 7, "kolovoza": 8, "rujna": 9, "listopada": 10, "studenoga": 11, "studenog": 11, "prosinca": 12,
+}
+HR_BROJ_RE = re.compile(r'(?<!\d)(\d{1,2})\.\s?(\d{1,2})\.\s?(20\d{2})\.?')
+HR_RIJEC_RE = re.compile(r'(?<!\d)(\d{1,2})\.\s+(' + "|".join(MJESECI) + r')\s+(20\d{2})', re.I)
+STAROST = {}  # url -> page_age iz rezultata pretrage
+
+
+def _dt(g, m, d):
+    try:
+        return date(int(g), int(m), int(d))
+    except ValueError:
+        return None
+
+
+def datum_iz_url(url):
+    for rx in URL_DATUM_RE:
+        m = rx.search(url)
+        if m and (d := _dt(*m.groups())):
+            return d
+    return None
+
+
+def datum_iz_teksta(html):
+    """Prvi datum u tekstu ispod naslova (h1) clanka."""
+    i = html.lower().find("<h1")
+    if i == -1:
+        return None
+    tekst = re.sub(r"<[^>]+>", " ", html[i:i + 6000])
+    m = HR_BROJ_RE.search(tekst)
+    if m:
+        return _dt(m.group(3), m.group(2), m.group(1))
+    m = HR_RIJEC_RE.search(tekst)
+    if m:
+        return _dt(m.group(3), MJESECI[m.group(2).lower()], m.group(1))
+    return None
+
+
+def datum_iz_starosti(raw, today=None):
+    """page_age iz web pretrage, npr. 'November 8, 2026' ili '2 days ago'."""
+    if not raw:
+        return None
+    raw = str(raw).strip()
+    today = today or date.today()
+    m = re.match(r"(\d+)\s+(hour|day|week)s?\s+ago", raw, re.I)
+    if m:
+        n, j = int(m.group(1)), m.group(2).lower()
+        return today - timedelta(days={"hour": 0, "day": n, "week": 7 * n}[j])
+    for fmt in ("%B %d, %Y", "%b %d, %Y", "%d %B %Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            pass
+    return parse_date(raw)
 
 
 def _datum_sa_stranice(url):
@@ -209,8 +273,9 @@ def _datum_sa_stranice(url):
         if r.status_code >= 400:
             return False, None
         html = r.text[:400_000]
-        m = META_RE.search(html) or JSONLD_RE.search(html) or TIME_RE.search(html)
-        return True, parse_date(m.group(1)) if m else None
+        m = META_RE.search(html) or META_RE2.search(html) or JSONLD_RE.search(html) or TIME_RE.search(html)
+        d = parse_date(m.group(1)) if m else None
+        return True, d or datum_iz_teksta(html)
     except Exception:
         return False, None
 
@@ -349,6 +414,8 @@ def claude_poziv(prompt, tools=None, max_tokens=8000, model=None):
                 for r in b.content:
                     if getattr(r, "url", None):
                         urls.add(_norm_url(r.url))
+                        if getattr(r, "page_age", None):
+                            STAROST[_norm_url(r.url)] = r.page_age
             elif b.type == "web_fetch_tool_result":
                 if getattr(b.content, "url", None):
                     urls.add(_norm_url(b.content.url))
@@ -377,6 +444,10 @@ def _uvod(start, today):
         "DATUMI: izostavi samo ono što je očito starije. Ako datum objave ne vidiš u rezultatu, "
         "SVEJEDNO uključi stavku i ostavi \"datum\" prazan: datum provjeravamo sami na stranici. "
         "Bolje uključiti stavku nesigurnog datuma nego je izostaviti.\n"
+        "VRSTA: vraćaj samo vijesti i nove objave (članke, priopćenja, odluke, nova savjetovanja, nove nabave). "
+        "NE vraćaj početne stranice, popise i kategorije, tekstove zakona, strategije i planove u PDF-u, "
+        "profile tvrtki ni opće informativne stranice koje se ne mijenjaju. Za javno savjetovanje vrati "
+        "poveznicu na konkretno savjetovanje i navedi rok, a ne poveznicu na popis savjetovanja.\n"
     )
 
 
@@ -534,8 +605,12 @@ def _provjeri(s, vidjeni, start, today):
     postoji, d_stranica = _datum_sa_stranice(s["url"])
     if not postoji and _norm_url(s["url"]) not in vidjeni:
         return None, "url"  # nedostupno i nije iz rezultata pretrage: moguće izmišljen URL
-    d = d_stranica or parse_date(s["datum"])
+    d = (d_stranica or datum_iz_url(s["url"])
+         or datum_iz_starosti(STAROST.get(_norm_url(s["url"])), today) or parse_date(s["datum"]))
     if not d:
+        rok = parse_date(s.get("rok"))
+        if "savjetovanj" in s.get("oznaka", "").lower() and rok and today <= rok <= today + timedelta(days=90):
+            return {**s, "datum": today.isoformat()}, None  # otvoreno savjetovanje: vazan je rok
         return None, "bez datuma"
     if d < start or d > today:
         return None, f"datum {d:%d.%m.%Y.}"
