@@ -27,12 +27,16 @@ def main():
     print(f"RSS: {len(svi_rss)} stavki")
 
     neuspjeli = 0
+    ukupno_pretraga = inst_n
+    ukupno_gresaka = len(inst_greske)
     for i, key in enumerate(CLIENTS):
         try:
             stavke, stats, greske = obradi_klijenta(key, start, today, inst_sirove, inst_urls, svi_rss)
             if i == 0:  # pretrage institucija pribrajamo prvom klijentu da se vide u ukupnom broju
                 stats["pretrage"] += inst_n
                 greske = inst_greske + rss_greske + greske
+            ukupno_pretraga += stats["pretrage"] - (inst_n if i == 0 else 0)
+            ukupno_gresaka += len(greske)
             sb_spremi_vijesti(key, stavke)
             sb_log(key, stats, greske)
             print(f"{key}: pronađeno {stats['pronadeno']}, spremljeno {stats['spremljeno']}, "
@@ -52,7 +56,11 @@ def main():
     except Exception as e:
         print(f"Čišćenje starih vijesti nije uspjelo: {e}")
 
+    print(f"Ukupno pretraga: {ukupno_pretraga}")
     if neuspjeli == len(CLIENTS):
+        sys.exit(1)
+    if ukupno_pretraga == 0 and ukupno_gresaka:
+        print("GREŠKA: nijedna web pretraga nije uspjela, provjerite greške iznad.")
         sys.exit(1)
 
 
