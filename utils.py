@@ -118,18 +118,129 @@ CLIENTS = {
 }
 
 CSS = """
-#MainMenu, footer {visibility: hidden;}
-html, body, [class*="css"] {font-family: "Segoe UI", "Source Sans Pro", Helvetica, Arial, sans-serif;}
-.block-container {max-width: 900px; padding-top: 2.5rem; padding-bottom: 3rem;}
-h1 {font-weight: 600; letter-spacing: -0.02em; color: #1B2A41;}
-h5 {margin-top: 0.2rem; margin-bottom: 0.3rem;}
-h5 a {color: #1B2A41; text-decoration: none; font-weight: 600;}
-h5 a:hover {color: #1F5F8B; text-decoration: underline;}
-a {color: #1F5F8B;}
-[data-testid="stCaptionContainer"] {color: #6B7280;}
-div[data-testid="stVerticalBlockBorderWrapper"] {border-radius: 10px; border-color: #E5E7EB;}
-button[kind="secondary"] {border-radius: 8px;}
-hr {margin: 1rem 0; border-color: #E5E7EB;}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+    --bg: #F7F8FA;
+    --surface: #FFFFFF;
+    --ink: #0F172A;
+    --muted: #64748B;
+    --line: #E2E8F0;
+    --accent: #2563EB;
+    --accent-soft: #EFF6FF;
+}
+
+html, body, [class*="css"], .stApp {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    color: var(--ink);
+}
+
+.stApp { background: var(--bg); }
+
+#MainMenu, footer, header[data-testid="stHeader"] { visibility: hidden; height: 0; }
+
+.block-container {
+    max-width: 960px;
+    padding-top: 2.5rem;
+    padding-bottom: 4rem;
+}
+
+/* Naslovi */
+h1 {
+    font-weight: 700;
+    font-size: 1.9rem;
+    letter-spacing: -0.03em;
+    color: var(--ink);
+    margin-bottom: 0.25rem;
+}
+h5 {
+    font-size: 1.02rem;
+    font-weight: 600;
+    line-height: 1.4;
+    margin: 0 0 0.35rem 0;
+}
+h5 a {
+    color: var(--ink);
+    text-decoration: none;
+}
+h5 a:hover {
+    color: var(--accent);
+}
+
+/* Meta tekst */
+[data-testid="stCaptionContainer"] {
+    color: var(--muted);
+    font-size: 0.82rem;
+    letter-spacing: 0.01em;
+}
+
+/* Kartice vijesti */
+div[data-testid="stVerticalBlockBorderWrapper"] > div {
+    background: var(--surface);
+    border: 1px solid var(--line) !important;
+    border-radius: 14px !important;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.03);
+    padding: 1.1rem 1.25rem;
+    transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+div[data-testid="stVerticalBlockBorderWrapper"] > div:hover {
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06), 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+
+/* Gumbi */
+.stButton > button {
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink);
+    font-weight: 500;
+    font-size: 0.85rem;
+    padding: 0.35rem 0.9rem;
+    transition: all 0.15s ease;
+}
+.stButton > button:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-soft);
+}
+.stButton > button:disabled {
+    background: var(--bg);
+    color: var(--muted);
+    border-color: var(--line);
+}
+
+/* Inputi i selectbox */
+div[data-baseweb="select"] > div,
+div[data-baseweb="input"] > div,
+textarea {
+    border-radius: 8px !important;
+    border-color: var(--line) !important;
+    background: var(--surface) !important;
+}
+
+/* Sidebar */
+section[data-testid="stSidebar"] {
+    background: #0F172A;
+}
+section[data-testid="stSidebar"] * {
+    color: #CBD5E1;
+}
+section[data-testid="stSidebar"] a:hover,
+section[data-testid="stSidebar"] [aria-current="page"] {
+    color: #FFFFFF !important;
+}
+
+/* Razdjelnice i metrike */
+hr {
+    margin: 1.25rem 0;
+    border: none;
+    border-top: 1px solid var(--line);
+}
+[data-testid="stExpander"] {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface);
+}
 """
 
 META_RE = re.compile(
