@@ -1,22 +1,26 @@
+import hashlib
 import json
-from datetime import datetime, timedelta
+import re
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta
+from urllib.parse import urlparse
 
+import requests
 import streamlit as st
 from exa_py import Exa
 from openai import OpenAI
 
-import re
-import requests
-from datetime import date
-
 DANA_UNAZAD = 3
 MIN_RELEVANTNOST = 2.5
+PARALELNO = 8
 
-# Kineski državni i kineski mediji na engleskom – isključeni iz pretrage
 ISKLJUCENI_IZVORI = [
     "xinhuanet.com", "news.cn", "english.news.cn", "globaltimes.cn",
     "chinadaily.com.cn", "cgtn.com", "chinamil.com.cn", "people.com.cn", "ecns.cn",
 ]
+
+ZASTAVE = {"HR": "🇭🇷", "BA": "🇧🇦", "ME": "🇲🇪", "EU": "🇪🇺", "OSTALO": "🌍"}
+TLD_ZEMLJA = {".hr": "HR", ".ba": "BA", ".me": "ME"}
 
 CLIENTS = {
     "airbnb": {
@@ -39,6 +43,10 @@ CLIENTS = {
             "Ministarstvo turizma i sporta kratkoročni najam propisi",
             "HTZ statistika dolasci noćenja smještaj Hrvatska",
         ],
+        "akteri": [
+            "Tonči Glavina", "Ministarstvo turizma i sporta",
+            "Hrvatska turistička zajednica", "Hrvatska udruga obiteljskog smještaja",
+        ],
     },
     "huawei": {
         "naziv": "Huawei",
@@ -46,8 +54,8 @@ CLIENTS = {
             "Tim prati Huawei i kinesku opremu u Hrvatskoj, BiH i Crnoj Gori, te geopolitiku između "
             "SAD-a, EU-a i Kine. Visoka relevantnost: pregovori o CSA2 (Akt o kibernetičkoj sigurnosti) "
             "i NIS2, zahtjevi za visokorizične dobavljače, javne nabave u kojima se spominje Huawei ili "
-            "kineska oprema (telekomi, 5G, državna infrastruktura), odnos SAD–Kina, EU–Kina, EU–Huawei "
-            "i Kina–Hrvatska (ulaganja, diplomacija, posjeti), stavovi Sabora, Vlade i ministarstava o toj temi. "
+            "kineska oprema, odnos SAD–Kina, EU–Kina, EU–Huawei i Kina–Hrvatska (ulaganja, diplomacija, "
+            "posjeti), stavovi Sabora, Vlade i ministarstava o toj temi. "
             "Niska relevantnost: tehnološke vijesti bez veze s Hrvatskom, regijom ili politikom."
         ),
         "upiti": [
@@ -60,6 +68,7 @@ CLIENTS = {
             "kineska ulaganja u Hrvatsku diplomacija",
             "javna nabava kineska oprema državna infrastruktura Hrvatska",
         ],
+        "akteri": ["Huawei", "Hrvatski sabor", "CARNET", "Hrvatska regulatorna agencija HAKOM"],
     },
     "weytec": {
         "naziv": "WEYTEC",
@@ -68,7 +77,7 @@ CLIENTS = {
             "podove (smartTOUCH, smartVISUAL, WDP MX, KVM). Visoka relevantnost: javne nabave u Hrvatskoj, "
             "BiH i Crnoj Gori za kontrolne sobe, centre upravljanja, prometne centre, energetiku, zračni promet, "
             "sigurnosne službe i banke; tehnički natječaji za video zidove, KVM, radna mjesta; projekti u regiji "
-            "(NEK, DARS, ELES, EMS, DEM, Gastrans). Oznaka 'Nabava' za sve tendere i natječaje. "
+            "(NEK, DARS, ELES, EMS, DEM, Gastrans). "
             "Niska relevantnost: opće vijesti o kontrolnim sobama bez nabave ili investicije."
         ),
         "upiti": [
@@ -81,6 +90,7 @@ CLIENTS = {
             "javna nabava kontrolna soba Crna Gora tender",
             "DARS ELES NEK Gastrans nabava sustav upravljanja",
         ],
+        "akteri": ["HAC Hrvatske autoceste", "HEP", "Croatia Control", "HŽ Infrastruktura", "DARS", "ELES"],
     },
     "envoid": {
         "naziv": "Envoid",
@@ -90,7 +100,7 @@ CLIENTS = {
             "Crnoj Gori i EU, posebno ako se tiču državnih službenika, vojske, diplomacije; regulativa "
             "(NIS2, CSA2, zaštita klasificiranih podataka); upozorenja CERT.hr, ENISA, ZSIS; javne nabave "
             "i tenderi za zaštitu mobitela, MDM i MTD rješenja u javnom sektoru (MUP, MORH, ministarstva, "
-            "sudovi, državna poduzeća). Oznaka 'Nabava' za tendere. "
+            "sudovi, državna poduzeća). "
             "Niska relevantnost: opći tehnološki članci bez veze s javnim sektorom ili Hrvatskom."
         ),
         "upiti": [
@@ -103,38 +113,53 @@ CLIENTS = {
             "javna nabava zaštita mobilnih uređaja ministarstvo MORH MUP",
             "mobile spyware zero-click iOS Android ranjivost",
         ],
+        "akteri": ["CERT.hr", "ZSIS", "ENISA", "MORH", "MUP"],
     },
 }
+
+CSS = """
+#MainMenu, footer {visibility: hidden;}
+html, body, [class*="css"] {font-family: "Segoe UI", "Source Sans Pro", Helvetica, Arial, sans-serif;}
+.block-container {max-width: 900px; padding-top: 2.5rem; padding-bottom: 3rem;}
+h1 {font-weight: 600; letter-spacing: -0.02em; color: #1B2A41;}
+h5 {margin-top: 0.2rem; margin-bottom: 0.3rem;}
+h5 a {color: #1B2A41; text-decoration: none; font-weight: 600;}
+h5 a:hover {color: #1F5F8B; text-decoration: underline;}
+a {color: #1F5F8B;}
+[data-testid="stCaptionContainer"] {color: #6B7280;}
+div[data-testid="stVerticalBlockBorderWrapper"] {border-radius: 10px; border-color: #E5E7EB;}
+button[kind="secondary"] {border-radius: 8px;}
+hr {margin: 1rem 0; border-color: #E5E7EB;}
+"""
+
+META_RE = re.compile(
+    r'<meta[^>]+(?:property|name|itemprop)=["\']'
+    r'(?:article:published_time|og:published_time|datePublished|pubdate|date)["\']'
+    r'[^>]*content=["\']([^"\']+)["\']',
+    re.I,
+)
+HR_DATUM_RE = re.compile(r'\b(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})\.?')
 
 
 def check_password():
     if st.session_state.get("password_correct"):
         return True
-    st.title("🔒 Prijava")
-    pw = st.text_input("Lozinka:", type="password")
+    st.title("Prijava")
+    pw = st.text_input("Lozinka", type="password")
     if pw:
         if pw == st.secrets["APP_PASSWORD"]:
             st.session_state["password_correct"] = True
             st.rerun()
-        else:
-            st.error("Netočna lozinka.")
+        st.error("Netočna lozinka.")
     return False
 
 
-def page_setup():
+def start():
+    """Postavlja stranicu, CSS i prijavu. Mora biti prvi poziv na svakoj stranici."""
     st.set_page_config(page_title="Praćenje vijesti", page_icon="▪", layout="centered")
-    st.markdown(
-        """
-        <style>
-        #MainMenu, footer {visibility: hidden;}
-        .block-container {max-width: 820px; padding-top: 2rem;}
-        h1 {font-weight: 600; letter-spacing: -0.02em;}
-        a {color: #1F4E79;}
-        hr {margin: 0.8rem 0;}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
+    if not check_password():
+        st.stop()
 
 
 @st.cache_resource
@@ -157,32 +182,61 @@ def parse_date(raw):
             return None
 
 
-def ai_ocjena(oai, kontekst, title, text):
+def zemlja_iz_url(url):
+    host = urlparse(url).netloc.lower()
+    for tld, zemlja in TLD_ZEMLJA.items():
+        if host.endswith(tld):
+            return zemlja
+    return None
+
+
+def stvarni_datum(url, text):
+    """Datum čita sa stranice (meta oznake), pa iz teksta (dd.mm.yyyy.)."""
+    try:
+        html = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"}).text
+        m = META_RE.search(html)
+        if m:
+            d = parse_date(m.group(1))
+            if d:
+                return d
+    except Exception:
+        pass
+    m = HR_DATUM_RE.search((text or "")[:1500])
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            pass
+    return None
+
+
+def ai_ocjena(oai, model, kontekst, title, text):
+    today = date.today()
+    cutoff = today - timedelta(days=DANA_UNAZAD)
     prompt = f"""Ocijeni vijest za praćenje klijenta.
 
-DANAŠNJI DATUM: {date.today().strftime('%d.%m.%Y.')}
-Ako je vijest objavljena prije {(date.today() - timedelta(days=DANA_UNAZAD)).strftime('%d.%m.%Y.')}
-ili ju je nemoguće datirati, ocijeni s 1, bez obzira na temu.
+DANAŠNJI DATUM: {today:%d.%m.%Y.}
+Ako je vijest starija od {cutoff:%d.%m.%Y.} ili se ne može datirati, ocijeni s 1.
 
 KONTEKST KLIJENTA:
 {kontekst}
 
 PRAVILA:
-- Relevantnost je broj od 1 do 5, može s decimalom (npr. 2.5).
-  5 = ključno, mora se pročitati. 4 = izravno relevantno. 3 = relevantno.
-  2 = površno povezano. 1 = nema veze.
-- Ocijeni s 1 oglase za nekretnine, sadržaj agencija, sport i crnu kroniku.
-- Ocijeni s 1 vijesti iz izvora izvan Hrvatske, BiH i Crne Gore, osim ako se izravno tiču tih zemalja.
-- Javna nabava dobiva oznaku "Nabava". Javno savjetovanje dobiva oznaku "Javno savjetovanje". Inače je oznaka prazna.
+- relevantnost: broj od 1 do 5, može s decimalom (npr. 2.5).
+  5 = ključno, 4 = izravno relevantno, 3 = relevantno, 2 = površno povezano, 1 = nema veze.
+- Oglasi za nekretnine, sadržaj agencija, sport i crna kronika: 1.
+- Vijesti iz izvora koji nisu hrvatski, bosanski ni crnogorski: 1, osim ako se tiču HR, BA, ME ili EU politike relevantne za klijenta.
+- zemlja: država o kojoj vijest govori. Dopušteno: HR, BA, ME, EU, OSTALO.
+- oznaka: "Nabava" za javne nabave i tendere, "Javno savjetovanje" za javna savjetovanja, inače prazan niz.
 
 Odgovori isključivo JSON objektom:
-{{"relevantnost": <broj 1-5>, "oznaka": "<Nabava | Javno savjetovanje | prazno>", "sazetak": "<2 rečenice na hrvatskom>"}}
+{{"relevantnost": <broj>, "zemlja": "<HR|BA|ME|EU|OSTALO>", "oznaka": "<tekst>", "sazetak": "<2 rečenice na hrvatskom>"}}
 
 Naslov: {title}
 Sadržaj: {text[:3000]}"""
 
     response = oai.chat.completions.create(
-        model=st.secrets.get("OPENAI_MODEL", "gpt-4o-mini"),
+        model=model,
         messages=[
             {"role": "system", "content": "Ti si analitičar vijesti. Odgovaraš isključivo JSON-om."},
             {"role": "user", "content": prompt},
@@ -193,48 +247,43 @@ Sadržaj: {text[:3000]}"""
     )
     data = json.loads(response.choices[0].message.content)
     score = max(1.0, min(5.0, float(data.get("relevantnost", 1))))
-    return score, data.get("oznaka", "").strip(), data.get("sazetak", "").strip()
-
-META_RE = re.compile(
-    r'<meta[^>]+(?:property|name|itemprop)=["\']'
-    r'(?:article:published_time|og:published_time|datePublished|pubdate|date)["\']'
-    r'[^>]*content=["\']([^"\']+)["\']',
-    re.I,
-)
-HR_DATUM_RE = re.compile(r'\b(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})\.?')
+    zemlja = str(data.get("zemlja", "OSTALO")).upper()
+    if zemlja not in ZASTAVE:
+        zemlja = "OSTALO"
+    return score, data.get("oznaka", "").strip(), zemlja, data.get("sazetak", "").strip()
 
 
-def stvarni_datum(url, text):
-    """Datum čita sa stranice (meta oznake), pa iz teksta (hrvatski format dd.mm.yyyy.).
-    Vraća None ako datum nije moguće potvrditi."""
+def _obradi(url, item, oai, model, kontekst, start, today):
+    pub = stvarni_datum(url, item.text)
+    if not pub or pub < start or pub > today or not item.text:
+        return "datum", None
     try:
-        html = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"}).text
-        m = META_RE.search(html)
-        if m:
-            d = parse_date(m.group(1))
-            if d:
-                return d
-    except Exception:
-        pass
+        score, oznaka, zemlja, sazetak = ai_ocjena(oai, model, kontekst, item.title, item.text)
+    except Exception as e:
+        return "greska", f"OpenAI, {url}: {e}"
+    if score < MIN_RELEVANTNOST:
+        return "relevantnost", None
+    return "ok", {
+        "title": item.title or url,
+        "url": url,
+        "source": urlparse(url).netloc.replace("www.", ""),
+        "date": pub.strftime("%d.%m.%Y."),
+        "sort_date": pub.isoformat(),
+        "relevantnost": score,
+        "oznaka": oznaka,
+        "zemlja": zemlja_iz_url(url) or zemlja,
+        "summary": sazetak or "Pregledajte članak za detalje.",
+    }
 
-    m = HR_DATUM_RE.search((text or "")[:1500])
-    if m:
-        try:
-            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
-        except ValueError:
-            pass
-    return None
 
-@st.cache_data(ttl=timedelta(hours=6), show_spinner=False)
-def fetch_news(client_key):
+def _pipeline(kontekst, upiti):
     exa, oai = get_clients()
-    cfg = CLIENTS[client_key]
+    model = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
     start = (datetime.now() - timedelta(days=DANA_UNAZAD)).date()
+    today = date.today()
 
-    greske = []
-    rezultati = {}  # dedup po URL-u
-
-    for q in cfg["upiti"]:
+    greske, rezultati = [], {}
+    for q in upiti:
         try:
             resp = exa.search_and_contents(
                 q,
@@ -250,80 +299,146 @@ def fetch_news(client_key):
         except Exception as e:
             greske.append(f"Exa, upit '{q[:45]}…': {e}")
 
+    stats = {"dohvaceno": len(rezultati), "datum": 0, "relevantnost": 0}
     vijesti = []
-    izbaceno_datum = 0
-    izbaceno_relevantnost = 0
+    with ThreadPoolExecutor(max_workers=PARALELNO) as ex:
+        futures = [
+            ex.submit(_obradi, url, item, oai, model, kontekst, start, today)
+            for url, item in rezultati.items()
+        ]
+        for f in futures:
+            status, payload = f.result()
+            if status == "ok":
+                vijesti.append(payload)
+            elif status == "datum":
+                stats["datum"] += 1
+            elif status == "relevantnost":
+                stats["relevantnost"] += 1
+            elif status == "greska":
+                greske.append(payload)
 
-    for url, item in rezultati.items():
-        pub = stvarni_datum(url, item.text)
-        today = date.today()
-        if not pub or pub < start or pub > today or not item.text:
-            izbaceno_datum += 1
-            continue
-        try:
-            score, oznaka, sazetak = ai_ocjena(oai, cfg["kontekst"], item.title, item.text)
-        except Exception as e:
-            greske.append(f"OpenAI, {url}: {e}")
-            continue
+    # Prvo po relevantnosti, pa unutar istog ranga po datumu (najnovije prvo)
+    vijesti.sort(key=lambda v: (v["relevantnost"], v["sort_date"]), reverse=True)
+    return {"vijesti": vijesti, "greske": greske, **stats}
 
-        if score < MIN_RELEVANTNOST:
-            izbaceno_relevantnost += 1
-            continue
 
-        vijesti.append({
-            "title": item.title or url,
-            "url": url,
-            "source": url.split("/")[2].replace("www.", ""),
-            "date": pub.strftime("%d.%m.%Y."),
-            "sort_date": pub.isoformat(),
-            "relevantnost": score,
-            "oznaka": oznaka,
-            "summary": sazetak or "Pregledajte članak za detalje.",
-        })
+@st.cache_data(ttl=timedelta(hours=6), show_spinner=False)
+def fetch_news(client_key):
+    cfg = CLIENTS[client_key]
+    return _pipeline(cfg["kontekst"], tuple(cfg["upiti"]))
 
-    vijesti.sort(key=lambda v: (v["sort_date"], v["relevantnost"]), reverse=True)
 
-    return {
-        "vijesti": vijesti,
-        "greske": greske,
-        "dohvaceno": len(rezultati),
-        "izbaceno_datum": izbaceno_datum,
-        "izbaceno_relevantnost": izbaceno_relevantnost,
+@st.cache_data(ttl=timedelta(hours=6), show_spinner=False)
+def fetch_akteri(client_key, akteri):
+    cfg = CLIENTS[client_key]
+    upiti = tuple(f"{a} Hrvatska izjava objava" for a in akteri)
+    kontekst = (
+        cfg["kontekst"]
+        + f" Fokus na sljedeće aktere: {', '.join(akteri)}. "
+        "Ocijeni visoko ako vijest izravno spominje ili citira aktera."
+    )
+    return _pipeline(kontekst, upiti)
+
+
+# ---------- ARHIVA (Supabase) ----------
+
+def _sb_url():
+    return f"{st.secrets['SUPABASE_URL']}/rest/v1/arhiva"
+
+
+def _sb_headers():
+    key = st.secrets["SUPABASE_KEY"]
+    return {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+
+def arhiviraj(v, klijent):
+    body = {
+        "url": v["url"], "klijent": klijent, "naslov": v["title"], "izvor": v["source"],
+        "datum": v["date"], "relevantnost": v["relevantnost"], "zemlja": v["zemlja"],
+        "oznaka": v["oznaka"], "sazetak": v["summary"], "biljeska": "",
     }
+    r = requests.post(
+        _sb_url(),
+        headers={**_sb_headers(), "Prefer": "resolution=merge-duplicates"},
+        json=body, timeout=10,
+    )
+    r.raise_for_status()
+
+
+def arhiva_lista(klijent=None):
+    params = {"select": "*", "order": "arhivirano_at.desc"}
+    if klijent:
+        params["klijent"] = f"eq.{klijent}"
+    r = requests.get(_sb_url(), headers=_sb_headers(), params=params, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+def arhiva_urls():
+    return {a["url"] for a in arhiva_lista()}
+
+
+def arhiva_biljeska(url, tekst):
+    r = requests.patch(_sb_url(), headers=_sb_headers(),
+                       params={"url": f"eq.{url}"}, json={"biljeska": tekst}, timeout=10)
+    r.raise_for_status()
+
+
+def arhiva_obrisi(url):
+    r = requests.delete(_sb_url(), headers=_sb_headers(), params={"url": f"eq.{url}"}, timeout=10)
+    r.raise_for_status()
+
+
+# ---------- PRIKAZ ----------
+
+def _kljuc(url):
+    return hashlib.md5(url.encode()).hexdigest()[:10]
+
+
+def prikazi_vijesti(vijesti, klijent, prefix):
+    arhivirani = arhiva_urls()
+    for v in vijesti:
+        zastava = ZASTAVE.get(v["zemlja"], "🌍")
+        meta = f"{zastava} {v['zemlja']}  ·  {v['date']}  ·  {v['source']}  ·  relevantnost {v['relevantnost']}"
+        if v["oznaka"]:
+            meta += f"  ·  {v['oznaka']}"
+
+        with st.container(border=True):
+            st.markdown(f"##### [{v['title']}]({v['url']})")
+            st.caption(meta)
+            st.write(v["summary"])
+            c1, c2 = st.columns([5, 1])
+            with c2:
+                if v["url"] in arhivirani:
+                    st.button("Arhivirano", key=f"{prefix}_{_kljuc(v['url'])}", disabled=True)
+                elif st.button("Arhiviraj", key=f"{prefix}_{_kljuc(v['url'])}"):
+                    arhiviraj(v, klijent)
+                    st.toast("Spremljeno u arhivu")
 
 
 def render_client_page(client_key):
     cfg = CLIENTS[client_key]
     st.title(cfg["naziv"])
-    st.caption(f"Zadnja {DANA_UNAZAD} dana · prag relevantnosti {MIN_RELEVANTNOST}")
+    st.caption(f"Zadnja {DANA_UNAZAD} dana · prag relevantnosti {MIN_RELEVANTNOST} · sortirano po relevantnosti")
 
-    with st.spinner("Pretražujem izvore..."):
+    with st.spinner("Pretražujem izvore…"):
         r = fetch_news(client_key)
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Dohvaćeno", r["dohvaceno"])
-    c2.metric("Izbačeno (datum)", r["izbaceno_datum"])
-    c3.metric("Izbačeno (relevantnost)", r["izbaceno_relevantnost"])
-    c4.metric("Prikazano", len(r["vijesti"]))
-
+    st.caption(
+        f"Dohvaćeno {r['dohvaceno']}  ·  izbačeno (datum) {r['datum']}  ·  "
+        f"izbačeno (relevantnost) {r['relevantnost']}  ·  prikazano {len(r['vijesti'])}"
+    )
     if st.button("Osvježi"):
         fetch_news.clear()
         st.rerun()
 
     if r["greske"]:
-        with st.expander(f"⚠️ {len(r['greske'])} grešaka pri dohvaćanju"):
+        with st.expander(f"Greške pri dohvaćanju ({len(r['greske'])})"):
             for g in r["greske"][:30]:
                 st.code(g)
 
     st.divider()
-
     if not r["vijesti"]:
-        st.info("Nema relevantnih objava u zadnja tri dana.")
+        st.info(f"Nema relevantnih objava u zadnja {DANA_UNAZAD} dana.")
         return
-
-    for v in r["vijesti"]:
-        oznaka = f" · **{v['oznaka']}**" if v["oznaka"] else ""
-        st.markdown(f"**[{v['title']}]({v['url']})**")
-        st.caption(f"{v['date']} · {v['source']} · relevantnost {v['relevantnost']}{oznaka}")
-        st.write(v["summary"])
-        st.divider()
+    prikazi_vijesti(r["vijesti"], cfg["naziv"], prefix=client_key)
