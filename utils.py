@@ -328,16 +328,19 @@ def fetch_news(client_key):
     return _pipeline(cfg["kontekst"], tuple(cfg["upiti"]))
 
 
+ZBT_KONTEKST = (
+    "Tim je PA i GR agencija ZBT Consulting u Hrvatskoj, BiH i Crnoj Gori. Pratimo aktere "
+    "(institucije, regulatore, državna poduzeća, lokalnu upravu, udruge) radi javnih politika, "
+    "nabava i poslovnog razvoja. Visoka relevantnost: izjave, odluke, nacrti propisa, javna "
+    "savjetovanja, nabave i ugovori koje izravno pokreće ili potpisuje navedeni akter. "
+    "Niska relevantnost: samo spominjanje imena bez veze s odlukom, javnom politikom ili nabavom."
+)
+
+
 @st.cache_data(ttl=timedelta(hours=6), show_spinner=False)
-def fetch_akteri(client_key, akteri):
-    cfg = CLIENTS[client_key]
-    upiti = tuple(f"{a} Hrvatska izjava objava" for a in akteri)
-    kontekst = (
-        cfg["kontekst"]
-        + f" Fokus na sljedeće aktere: {', '.join(akteri)}. "
-        "Ocijeni visoko ako vijest izravno spominje ili citira aktera."
-    )
-    return _pipeline(kontekst, upiti)
+def fetch_akteri(akteri):
+    upiti = tuple(f"{a} izjava odluka nabava savjetovanje" for a in akteri)
+    return _pipeline(ZBT_KONTEKST, upiti)
 
 
 # ---------- ARHIVA (Supabase) ----------
