@@ -39,6 +39,18 @@ BLOKIRANO = [
     "cgtn.com", "chinamil.com.cn", "people.com.cn", "ecns.cn",
 ]
 
+# Domaci izvori: sve s .hr, .ba i .me te ovi portali na drugim domenama.
+DOMACI_EXTRA = ["netokracija.com", "ictbusiness.info", "bloombergadria.com", "europa.eu"]
+# Exa pretrazuje samo ove medije (svjetske teme kako ih prenose domaci portali).
+DOMACI_MEDIJI = [
+    "index.hr", "jutarnji.hr", "vecernji.hr", "24sata.hr", "tportal.hr", "n1info.hr", "net.hr",
+    "dnevnik.hr", "rtl.hr", "hrt.hr", "hina.hr", "poslovni.hr", "lidermedia.hr", "telegram.hr",
+    "nacional.hr", "slobodnadalmacija.hr", "novilist.hr", "glasistre.hr", "glas-slavonije.hr",
+    "zadarski.hr", "dulist.hr", "rep.hr", "mojnovac.hr", "forbes.hr", "bug.hr", "hrturizam.hr",
+    "netokracija.com", "ictbusiness.info", "bloombergadria.com",
+    "klix.ba", "n1info.ba", "avaz.ba", "vijesti.me", "cdm.me", "rtcg.me",
+]
+
 ZASTAVE = {"HR": "🇭🇷", "BA": "🇧🇦", "ME": "🇲🇪", "EU": "🇪🇺", "OSTALO": "🌍"}
 TLD_ZEMLJA = {".hr": "HR", ".ba": "BA", ".me": "ME"}
 
@@ -49,6 +61,17 @@ INSTITUCIJE_DOMENE = [
     "cert.hr", "htz.hr", "zagreb.hr", "split.hr", "rijeka.hr", "dubrovnik.hr",
     "zadar.hr", "pula.hr", "porec.hr", "makarska.hr", "osijek.hr",
 ]
+# Portali bez upotrebljivog RSS-a (ili koji blokiraju automatske zahtjeve, npr. Netokracija):
+# njihove nove clanke dohvacamo preko Google Newsa ogranicenog na stranicu. Google daje
+# naslov, poveznicu i pouzdan datum, pa samu stranicu ne treba otvarati.
+GN_STRANICE = [
+    ("netokracija.com", "Netokracija"),
+    ("ictbusiness.info", "ICT Business"),
+    ("poslovni.hr", "Poslovni dnevnik"),
+    ("lidermedia.hr", "Lider"),
+    ("bug.hr", "Bug"),
+]
+
 INSTITUCIJE_UPITI = [
     "javno savjetovanje nacrt zakona pravilnika",
     "sjednica Vlade odluke",
@@ -69,7 +92,6 @@ RSS_FEEDOVI = [
     ("https://n1info.hr/feed/", "n1info.hr", False),
     ("https://www.tportal.hr/rss", "tportal.hr", False),
     ("https://www.telegram.hr/feed/", "telegram.hr", False),
-    ("https://www.netokracija.com/feed", "netokracija.com", False),
     ("https://www.novilist.hr/feed/", "novilist.hr", False),
 ]
 
@@ -104,10 +126,10 @@ CLIENTS = {
             "Nisko: tehnološke vijesti bez veze s regijom ili politikom."
         ),
         "exa_upiti": [
-            "EU Cybersecurity Act revision high-risk suppliers Huawei",
+            "revizija Akta o kibernetičkoj sigurnosti visokorizični dobavljači",
             "Huawei Hrvatska",
             "NIS2 provedba Hrvatska kibernetička sigurnost",
-            "EU China trade relations",
+            "odnosi Europske unije i Kine trgovina",
             "kineska ulaganja Hrvatska",
         ],
         "gn_upiti": ["Huawei", "Kina Hrvatska", "EU Kina", "kibernetička sigurnost NIS2", "5G Hrvatska"],
@@ -145,11 +167,11 @@ CLIENTS = {
             "Nisko: opći tehnološki članci bez veze s javnim sektorom ili regijom."
         ),
         "exa_upiti": [
-            "spyware mobile phones government officials Europe",
+            "špijunski softver na mobitelima dužnosnika",
             "špijunski softver mobitel",
             "CERT.hr upozorenje",
             "NIS2 javni sektor mobilni uređaji",
-            "Pegasus spyware investigation EU",
+            "Pegasus špijuniranje istraga",
         ],
         "gn_upiti": ["špijunski softver", "Pegasus", "kibernetički napad", "CERT.hr", "hakerski napad mobitel"],
         "kljucne_rijeci": ["spyware", "pegasus", "špijun", "mobitel", "mobiln", "kibernet", "hak", "cert",
@@ -318,10 +340,17 @@ def _json_iz_teksta(tekst, vrsta="lista"):
     return tip()
 
 
-def _kandidat(url, naslov, izvor, opis="", datum=None, pouzdan=False, porijeklo=""):
+def _kandidat(url, naslov, izvor, opis="", datum=None, pouzdan=False, porijeklo="", izvor_url=""):
     return {"url": url, "naslov": (naslov or url).strip()[:300], "izvor": izvor or _domena(url),
             "opis": re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", opis or "")).strip()[:350],
-            "datum": datum.isoformat() if datum else "", "pouzdan": pouzdan, "porijeklo": porijeklo}
+            "datum": datum.isoformat() if datum else "", "pouzdan": pouzdan, "porijeklo": porijeklo,
+            "izvor_url": izvor_url or url}
+
+
+def je_domaci(k):
+    """True za hrvatske, bosanskohercegovacke i crnogorske izvore (i sluzbene EU stranice)."""
+    host = urlparse(k.get("izvor_url") or k["url"]).netloc.lower().replace("www.", "")
+    return host.endswith((".hr", ".ba", ".me")) or any(host == d or host.endswith("." + d) for d in DOMACI_EXTRA)
 
 
 # ---------- POTROŠNJA ----------
@@ -381,7 +410,7 @@ def exa_pretraga(upiti, start, institucije=False):
             kw["include_domains"] = INSTITUCIJE_DOMENE
         else:
             kw["category"] = "news"
-            kw["exclude_domains"] = BLOKIRANO
+            kw["include_domains"] = DOMACI_MEDIJI
         try:
             try:
                 resp = exa.search_and_contents(q, type="auto", **kw)
@@ -396,10 +425,27 @@ def exa_pretraga(upiti, start, institucije=False):
     return out, greske
 
 
+def _parsiraj_xml(r):
+    """Neki feedovi (npr. Vladin) u zaglavlju navode krivi znakovni zapis: tada ga zanemari."""
+    try:
+        return ET.fromstring(r.content)
+    except ET.ParseError:
+        for enc in ("utf-8", "windows-1250", r.apparent_encoding or "utf-8"):
+            try:
+                tekst = r.content.decode(enc)
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+        else:
+            tekst = r.content.decode("utf-8", errors="replace")
+        tekst = re.sub(r"^\s*<\?xml[^>]*\?>", "", tekst)
+        return ET.fromstring(tekst)
+
+
 def _citaj_rss(url, izvor, start, today, porijeklo):
     r = requests.get(url, timeout=15, headers=UA)
     r.raise_for_status()
-    root = ET.fromstring(r.content)
+    root = _parsiraj_xml(r)
     out = []
     for it in root.iter("item"):
         link = (it.findtext("link") or "").strip()
@@ -409,12 +455,14 @@ def _citaj_rss(url, izvor, start, today, porijeklo):
         izv = izvor
         src = it.find("source")
         naslov = it.findtext("title") or ""
+        izvor_url = ""
         if src is not None and (src.text or "").strip():
             izv = src.text.strip()  # Google News navodi stvarni izvor
+            izvor_url = src.get("url") or ""
             if naslov.endswith(f" - {izv}"):
                 naslov = naslov[: -len(izv) - 3]
         out.append(_kandidat(link, naslov, izv, it.findtext("description") or "",
-                             datum=d, pouzdan=True, porijeklo=porijeklo))
+                             datum=d, pouzdan=True, porijeklo=porijeklo, izvor_url=izvor_url))
     return out
 
 
@@ -431,13 +479,13 @@ def rss_stavke(start, today):
     return out, napomene
 
 
-def google_news(upiti, start, today, dana=DANA_UNAZAD):
+def google_news(upiti, start, today, dana=DANA_UNAZAD, porijeklo="Google News"):
     out, greske = [], []
     for q in upiti:
         url = (f"https://news.google.com/rss/search?q={quote_plus(q + f' when:{dana}d')}"
                "&hl=hr&gl=HR&ceid=HR:hr")
         try:
-            out += _citaj_rss(url, "Google News", start, today, "Google News")
+            out += _citaj_rss(url, "Google News", start, today, porijeklo)
         except Exception as e:
             greske.append(f"Google News '{q}': {str(e)[:80]}")
     return out, greske
@@ -506,7 +554,7 @@ def urednik(naziv, kontekst, kandidati, start, today, trazi_upite=True):
         for i, k in enumerate(kandidati)
     )
     upiti_dio = (
-        f'\n"dodatni_upiti": do {DODATNIH_UPITA} kratka upita na hrvatskom ili engleskom za drugi krug pretrage: '
+        f'\n"dodatni_upiti": do {DODATNIH_UPITA} kratka upita na hrvatskom za drugi krug pretrage po domaćim portalima: '
         "konkretni zakoni, institucije, osobe, projekti ili nabave iz odabranih stavki o kojima vrijedi potražiti "
         "nastavak, reakcije ili službene dokumente. Ako nema smisla, vrati [].\n"
         if trazi_upite else ""
@@ -521,7 +569,8 @@ Ispod su prikupljene stavke (broj. [izvor | datum] naslov — isječak). Odaberi
 - Izostavi stavke koje su očito starije od razdoblja, sport, crnu kroniku, oglase i sadržaj bez veze s klijentom.
 - Izostavi trajne stranice (početne stranice, popise, tekstove zakona, profile tvrtki) osim ako je riječ o novom savjetovanju ili nabavi.
 - Ako je isti događaj više puta, odaberi jednu, najinformativniju stavku.
-- Ne koristi kineske državne medije.
+- Izvori su hrvatski, bosanskohercegovački i crnogorski portali te službene stranice. Svjetska događanja
+  pratimo kroz to kako ih prenose domaći portali.
 
 STAVKE:
 {popis}
@@ -602,6 +651,10 @@ def spoji(*liste):
 def zajednicki_izvori(start, today):
     """Jednom po pokretanju: RSS i Exa pretraga institucija. Vraca (kandidati, napomene)."""
     rss, napomene = rss_stavke(start, today)
+    for domena, naziv in GN_STRANICE:
+        st, g = google_news([f"site:{domena}"], start, today, porijeklo="RSS")
+        rss += st
+        napomene.append(f"Google News {naziv}: {len(st)} stavki" + (f" ({g[0]})" if g else ""))
     inst, greske = exa_pretraga(INSTITUCIJE_UPITI, start, institucije=True)
     napomene.append(f"Exa institucije: {len(inst)} stavki")
     return rss + inst, napomene + greske
@@ -620,7 +673,7 @@ def obradi_klijenta(key, start, today, zajednicki):
     zaj = vlada + filtriraj([k for k in rss if k["izvor"] != "vlada.gov.hr"], cfg["kljucne_rijeci"])
     inst = [k for k in zajednicki if k["porijeklo"] == "Exa institucije"]
     # Izravni izvori prvi: kod duplikata po naslovu zadrzava se izravna poveznica, ne Googleova.
-    kandidati = spoji_kandidate(zaj, inst, exa1, gn1)[:MAX_KANDIDATA]
+    kandidati = [k for k in spoji_kandidate(zaj, inst, exa1, gn1) if je_domaci(k)][:MAX_KANDIDATA]
 
     odabrani1, dodatni = urednik(cfg["naziv"], cfg["kontekst"], kandidati, start, today)
 
@@ -633,7 +686,7 @@ def obradi_klijenta(key, start, today, zajednicki):
             gn2, g = google_news(dodatni, start, today)
             greske += g
             # duplikati po adresi i po naslovu u odnosu na prvi krug
-            novi = spoji_kandidate(kandidati, exa2, gn2)[len(kandidati):][:60]
+            novi = [k for k in spoji_kandidate(kandidati, exa2, gn2)[len(kandidati):] if je_domaci(k)][:60]
             n2 = len(novi)
             odabrani2, _ = urednik(cfg["naziv"], cfg["kontekst"], novi, start, today, trazi_upite=False)
         except Exception as e:
@@ -656,7 +709,7 @@ def obradi_klijenta(key, start, today, zajednicki):
 def trazi_aktere(akteri, start, today):
     exa, _ = exa_pretraga(list(akteri), start)
     gn, _ = google_news(list(akteri), start, today)
-    kandidati = spoji_kandidate(exa, gn)[:MAX_KANDIDATA]
+    kandidati = [k for k in spoji_kandidate(exa, gn) if je_domaci(k)][:MAX_KANDIDATA]
     kontekst = ZBT_KONTEKST + f" AKTERI: {', '.join(akteri)}."
     odabrani, _ = urednik("ZBT (akteri)", kontekst, kandidati, start, today, trazi_upite=False)
     provjerene = [s for s in provjeri_sve(odabrani, start, today) if s["relevantnost"] >= MIN_RELEVANTNOST]
