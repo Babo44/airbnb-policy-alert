@@ -1,7 +1,3 @@
-import streamlit as st
-from utils import page_setup, check_password, render_client_page
-
-page_setup()
-if not check_password():
-    st.stop()
+from utils import start, render_client_page
+start()
 render_client_page("huawei")
