@@ -1,19 +1,10 @@
-Kiša se ne vidi, a kartice su prazne i razbijene jer `st.markdown` pretvara HTML u odlomke. Dvije stvari treba popraviti.
-
-**1. Kiša.** Streamlit `st.markdown` ne izvršava `<script>`, pa animacija ne radi. Rješenje je `components.html` s visinom 0, ali s CSS-om koji iframe pozicionira kao pozadinu preko cijelog ekrana. Iframe je u istom dokumentu, pa ga CSS može pomaknuti.
-
-**2. Kartice.** Ugniježdeni HTML u `st.markdown` se razbija, pa umjesto jednog bloka dobijete više odlomaka i praznih redaka. Sve kartice treba napraviti kao jedan HTML blok, bez praznih redaka između tagova i bez uvlačenja, ili koristiti `st.html` ako je verzija Streamlita novija.
-
-Zamijenite cijeli `app.py` ovim:
-
-```python
 import streamlit as st
 import streamlit.components.v1 as components
 from utils import start
 
 start()
 
-# Kiša u pozadini: iframe se rasteže preko cijelog ekrana i ide iza sadržaja
+# Kisa u pozadini: iframe se rasteze preko cijelog ekrana i ide iza sadrzaja
 components.html("""
 <!DOCTYPE html>
 <html><head><style>
@@ -56,16 +47,18 @@ iframe[title="streamlit_components.v1.html"], iframe[title="st.iframe"] {
     z-index: 0; pointer-events: none; border: 0;
 }
 .block-container { position: relative; z-index: 1; }
-.zbt-card {
+a.zbt-card {
     display: block; text-decoration: none !important; background: #FFFFFF;
     border: 1px solid #DDE2E5; border-radius: 14px; padding: 1.1rem 1.25rem;
     margin-bottom: 1rem; box-shadow: 0 1px 2px rgba(15,23,42,.05);
     transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
 }
-.zbt-card:hover { transform: translateY(-2px); border-color: #3FA9A7;
-    box-shadow: 0 8px 20px rgba(15,23,42,.10); }
-.zbt-title { color: #2F3438 !important; font-weight: 600; font-size: 1rem; }
-.zbt-desc  { color: #6B7378; font-size: .85rem; margin-top: .3rem; }
+a.zbt-card:hover {
+    transform: translateY(-2px); border-color: #3FA9A7;
+    box-shadow: 0 8px 20px rgba(15,23,42,.18);
+}
+.zbt-title { display: block; color: #2F3438 !important; font-weight: 600; font-size: 1rem; }
+.zbt-desc  { display: block; color: #6B7378 !important; font-size: .85rem; margin-top: .3rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -92,8 +85,7 @@ for i, (naziv, url, opis) in enumerate(NAV):
     with cols[i % 3]:
         st.markdown(
             f'<a href="/{url}" target="_self" class="zbt-card">'
-            f'<div class="zbt-title">{naziv}</div>'
-            f'<div class="zbt-desc">{opis}</div></a>',
+            f'<span class="zbt-title">{naziv}</span>'
+            f'<span class="zbt-desc">{opis}</span></a>',
             unsafe_allow_html=True,
         )
-```
