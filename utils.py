@@ -1,121 +1,13 @@
+"""Prikaz u Streamlit aplikaciji. Pretraga se radi u osvjezi.py (GitHub Actions),
+a aplikacija cita gotove rezultate iz Supabasea."""
 import hashlib
-import json
-import re
-from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timedelta
-from urllib.parse import urlparse
+import os
+from datetime import datetime, timedelta
 
-import requests
 import streamlit as st
-from exa_py import Exa
-from openai import OpenAI
 
-DANA_UNAZAD = 3
-MIN_RELEVANTNOST = 2.5
-PARALELNO = 8
-
-ISKLJUCENI_IZVORI = [
-    "xinhuanet.com", "news.cn", "english.news.cn", "globaltimes.cn",
-    "chinadaily.com.cn", "cgtn.com", "chinamil.com.cn", "people.com.cn", "ecns.cn",
-]
-
-ZASTAVE = {"HR": "🇭🇷", "BA": "🇧🇦", "ME": "🇲🇪", "EU": "🇪🇺", "OSTALO": "🌍"}
-TLD_ZEMLJA = {".hr": "HR", ".ba": "BA", ".me": "ME"}
-
-CLIENTS = {
-    "airbnb": {
-        "naziv": "Airbnb",
-        "kontekst": (
-            "Tim prati kratkoročni (turistički) najam u Hrvatskoj: Airbnb, privatne iznajmljivače, "
-            "obiteljski smještaj. Visoka relevantnost: zakoni i propisi o najmu, porezi i paušali za "
-            "iznajmljivače, odluke vlada, ministarstava, gradova i županija o turističkom najmu, "
-            "javna savjetovanja o planovima upravljanja destinacijom i turizmom, stavovi udruga "
-            "iznajmljivača, statistika HTZ-a o smještaju i noćenjima, stambena politika povezana s najmom. "
-            "Niska relevantnost: opće turističke priče bez veze s najmom."
-        ),
-        "upiti": [
-            "savjetovanje o planu upravljanja turizmom i destinacijom lokalna zajednica",
-            "plan upravljanja destinacijom javno savjetovanje grad županija turizam",
-            "kratkoročni najam apartmani zabrana ograničenje odluka grada",
-            "zakon o turističkom najmu izmjene Hrvatska iznajmljivači paušalni porez",
-            "zakon o upravljanju i održavanju zgrada suglasnost suvlasnika kratkoročni najam",
-            "Hrvatska udruga obiteljskog smještaja iznajmljivači Airbnb",
-            "Ministarstvo turizma i sporta kratkoročni najam propisi",
-            "HTZ statistika dolasci noćenja smještaj Hrvatska",
-        ],
-        "akteri": [
-            "Tonči Glavina", "Ministarstvo turizma i sporta",
-            "Hrvatska turistička zajednica", "Hrvatska udruga obiteljskog smještaja",
-        ],
-    },
-    "huawei": {
-        "naziv": "Huawei",
-        "kontekst": (
-            "Tim prati Huawei i kinesku opremu u Hrvatskoj, BiH i Crnoj Gori, te geopolitiku između "
-            "SAD-a, EU-a i Kine. Visoka relevantnost: pregovori o CSA2 (Akt o kibernetičkoj sigurnosti) "
-            "i NIS2, zahtjevi za visokorizične dobavljače, javne nabave u kojima se spominje Huawei ili "
-            "kineska oprema, odnos SAD–Kina, EU–Kina, EU–Huawei i Kina–Hrvatska (ulaganja, diplomacija, "
-            "posjeti), stavovi Sabora, Vlade i ministarstava o toj temi. "
-            "Niska relevantnost: tehnološke vijesti bez veze s Hrvatskom, regijom ili politikom."
-        ),
-        "upiti": [
-            "CSA2 Akt o kibernetičkoj sigurnosti Hrvatska pregovori visokorizični dobavljači",
-            "NIS2 zakon o kibernetičkoj sigurnosti Hrvatska Sabor",
-            "Huawei Hrvatska",
-            "Huawei 5G oprema Hrvatska nabava telekomunikacije",
-            "SAD Kina odnos EU Kina Hrvatska",
-            "EU Huawei visokorizični dobavljači 5G zabrana",
-            "kineska ulaganja u Hrvatsku diplomacija",
-            "javna nabava kineska oprema državna infrastruktura Hrvatska",
-        ],
-        "akteri": ["Huawei", "Hrvatski sabor", "CARNET", "Hrvatska regulatorna agencija HAKOM"],
-    },
-    "weytec": {
-        "naziv": "WEYTEC",
-        "kontekst": (
-            "Tim prati tržište za WEYTEC, švicarskog proizvođača opreme za kontrolne sobe i trgovinske "
-            "podove (smartTOUCH, smartVISUAL, WDP MX, KVM). Visoka relevantnost: javne nabave u Hrvatskoj, "
-            "BiH i Crnoj Gori za kontrolne sobe, centre upravljanja, prometne centre, energetiku, zračni promet, "
-            "sigurnosne službe i banke; tehnički natječaji za video zidove, KVM, radna mjesta; projekti u regiji "
-            "(NEK, DARS, ELES, EMS, DEM, Gastrans). "
-            "Niska relevantnost: opće vijesti o kontrolnim sobama bez nabave ili investicije."
-        ),
-        "upiti": [
-            "javna nabava kontrolne sobe centar upravljanja Hrvatska",
-            "tender video zid kontrolna soba nabava",
-            "javna nabava kontrolni centar HAC HŽ HEP HOPS nabava opreme",
-            "javna nabava zračna luka kontrola zračnog prometa oprema Hrvatska",
-            "nabava sigurnosni centar MUP MORH kontrolna soba",
-            "javna nabava kontrolna soba Bosna i Hercegovina tender",
-            "javna nabava kontrolna soba Crna Gora tender",
-            "DARS ELES NEK Gastrans nabava sustav upravljanja",
-        ],
-        "akteri": ["HAC Hrvatske autoceste", "HEP", "Croatia Control", "HŽ Infrastruktura", "DARS", "ELES"],
-    },
-    "envoid": {
-        "naziv": "Envoid",
-        "kontekst": (
-            "Tim prati tržište za Envoid, zaštitu mobilnih uređaja za visokorizične organizacije. "
-            "Visoka relevantnost: mobilni spyware i napadi (Pegasus, DarkSword, Coruna) u Hrvatskoj, BiH, "
-            "Crnoj Gori i EU, posebno ako se tiču državnih službenika, vojske, diplomacije; regulativa "
-            "(NIS2, CSA2, zaštita klasificiranih podataka); upozorenja CERT.hr, ENISA, ZSIS; javne nabave "
-            "i tenderi za zaštitu mobitela, MDM i MTD rješenja u javnom sektoru (MUP, MORH, ministarstva, "
-            "sudovi, državna poduzeća). "
-            "Niska relevantnost: opći tehnološki članci bez veze s javnim sektorom ili Hrvatskom."
-        ),
-        "upiti": [
-            "Pegasus spyware Hrvatska mobilni telefoni državni službenici",
-            "špijunski softver mobiteli napad Hrvatska",
-            "mobilna sigurnost MDM zaštita mobitela državna tijela nabava",
-            "NIS2 mobilni uređaji zaštita institucija Hrvatska",
-            "CERT.hr upozorenje mobilni uređaji napad",
-            "ZSIS zaštita klasificiranih podataka mobiteli",
-            "javna nabava zaštita mobilnih uređaja ministarstvo MORH MUP",
-            "mobile spyware zero-click iOS Android ranjivost",
-        ],
-        "akteri": ["CERT.hr", "ZSIS", "ENISA", "MORH", "MUP"],
-    },
-}
+import core
+from core import CLIENTS, DANA_UNAZAD, MIN_RELEVANTNOST, ZASTAVE, parse_date, razdoblje
 
 CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -126,139 +18,42 @@ CSS = """
     --ink: #2F3438;
     --muted: #6B7378;
     --line: #DDE2E5;
-    --accent: #3FA9A7;        /* tirkizna, tamnija za čitljivost na bijelom */
+    --accent: #3FA9A7;
     --accent-soft: #E8F6F5;
     --brand-gray: #545A5E;
 }
-
 html, body, [class*="css"], .stApp {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     color: var(--ink);
 }
-
 .stApp { background: var(--bg); }
-
-#MainMenu, footer, header[data-testid="stHeader"] { visibility: hidden; height: 0; }
-
-.block-container {
-    max-width: 960px;
-    padding-top: 2.5rem;
-    padding-bottom: 4rem;
-}
-
-/* Naslovi */
-h1 {
-    font-weight: 700;
-    font-size: 1.9rem;
-    letter-spacing: -0.03em;
-    color: var(--ink);
-    margin-bottom: 0.25rem;
-}
-h5 {
-    font-size: 1.02rem;
-    font-weight: 600;
-    line-height: 1.4;
-    margin: 0 0 0.35rem 0;
-}
-h5 a {
-    color: var(--ink);
-    text-decoration: none;
-}
-h5 a:hover {
-    color: var(--accent);
-}
-
-a {
-    color: var(--accent);
-}
-
-section[data-testid="stSidebar"] {
-    background: var(--brand-gray);
-}
-
-/* Meta tekst */
-[data-testid="stCaptionContainer"] {
-    color: var(--muted);
-    font-size: 0.82rem;
-    letter-spacing: 0.01em;
-}
-
-/* Kartice vijesti */
+#MainMenu, footer { visibility: hidden; }
+.block-container { max-width: 960px; padding-top: 2.5rem; padding-bottom: 4rem; }
+h1 { font-weight: 700; font-size: 1.9rem; letter-spacing: -0.03em; color: var(--ink); }
+h5 { font-size: 1.02rem; font-weight: 600; line-height: 1.4; margin: 0 0 0.35rem 0; }
+h5 a { color: var(--ink); text-decoration: none; }
+h5 a:hover { color: var(--accent); }
+a { color: var(--accent); }
+[data-testid="stCaptionContainer"] { color: var(--muted); font-size: 0.82rem; }
 div[data-testid="stVerticalBlockBorderWrapper"] > div {
     background: var(--surface);
     border: 1px solid var(--line) !important;
     border-radius: 14px !important;
-    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.03);
-    padding: 1.1rem 1.25rem;
-    transition: box-shadow 0.15s ease, transform 0.15s ease;
+    box-shadow: 0 1px 2px rgba(15,23,42,.04), 0 4px 12px rgba(15,23,42,.03);
 }
-div[data-testid="stVerticalBlockBorderWrapper"] > div:hover {
-    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06), 0 10px 24px rgba(15, 23, 42, 0.06);
-}
-
-/* Gumbi */
 .stButton > button {
-    border-radius: 8px;
-    border: 1px solid var(--line);
-    background: var(--surface);
-    color: var(--ink);
-    font-weight: 500;
-    font-size: 0.85rem;
-    padding: 0.35rem 0.9rem;
-    transition: all 0.15s ease;
+    border-radius: 8px; border: 1px solid var(--line); background: var(--surface);
+    color: var(--ink); font-weight: 500; font-size: 0.85rem;
 }
-.stButton > button:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-    background: var(--accent-soft);
-}
-.stButton > button:disabled {
-    background: var(--bg);
-    color: var(--muted);
-    border-color: var(--line);
-}
-
-/* Inputi i selectbox */
-div[data-baseweb="select"] > div,
-div[data-baseweb="input"] > div,
-textarea {
-    border-radius: 8px !important;
-    border-color: var(--line) !important;
-    background: var(--surface) !important;
-}
-
-/* Sidebar */
-section[data-testid="stSidebar"] {
-    background: #0F172A;
-}
-section[data-testid="stSidebar"] * {
-    color: #CBD5E1;
-}
-section[data-testid="stSidebar"] a:hover,
-section[data-testid="stSidebar"] [aria-current="page"] {
-    color: #FFFFFF !important;
-}
-
-/* Razdjelnice i metrike */
-hr {
-    margin: 1.25rem 0;
-    border: none;
-    border-top: 1px solid var(--line);
-}
-[data-testid="stExpander"] {
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: var(--surface);
-}
+.stButton > button:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+section[data-testid="stSidebar"] { background: var(--brand-gray); }
+section[data-testid="stSidebar"] * { color: #E2E8F0; }
+hr { margin: 1.25rem 0; border: none; border-top: 1px solid var(--line); }
+.zbt-rok { display:inline-block; background:#FFF4E5; color:#9A5B00; border-radius:6px;
+           padding:1px 8px; font-size:.78rem; font-weight:600; margin-left:4px; }
 """
 
-META_RE = re.compile(
-    r'<meta[^>]+(?:property|name|itemprop)=["\']'
-    r'(?:article:published_time|og:published_time|datePublished|pubdate|date)["\']'
-    r'[^>]*content=["\']([^"\']+)["\']',
-    re.I,
-)
-HR_DATUM_RE = re.compile(r'\b(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})\.?')
+KLJUCEVI = ["ANTHROPIC_API_KEY", "SUPABASE_URL", "SUPABASE_KEY", "CLAUDE_MODEL"]
 
 
 def check_password():
@@ -275,268 +70,76 @@ def check_password():
 
 
 def start():
-    """Postavlja stranicu, CSS i prijavu. Mora biti prvi poziv na svakoj stranici."""
+    """Prvi poziv na svakoj stranici: postavke, CSS, kljucevi i prijava."""
     st.set_page_config(page_title="Praćenje vijesti", page_icon="▪", layout="centered")
     st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
+    for k in KLJUCEVI:
+        if k in st.secrets and not os.environ.get(k):
+            os.environ[k] = str(st.secrets[k])
     if not check_password():
         st.stop()
 
 
-@st.cache_resource
-def get_clients():
-    return (
-        Exa(api_key=st.secrets["EXA_API_KEY"]),
-        OpenAI(api_key=st.secrets["OPENAI_API_KEY"]),
-    )
+def _fmt_datum(raw):
+    d = parse_date(raw)
+    return d.strftime("%d.%m.%Y.") if d else (raw or "")
 
-
-def parse_date(raw):
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
-    except ValueError:
-        try:
-            return datetime.strptime(raw[:10], "%Y-%m-%d").date()
-        except ValueError:
-            return None
-
-
-def zemlja_iz_url(url):
-    host = urlparse(url).netloc.lower()
-    for tld, zemlja in TLD_ZEMLJA.items():
-        if host.endswith(tld):
-            return zemlja
-    return None
-
-
-def stvarni_datum(url, text):
-    """Datum čita sa stranice (meta oznake), pa iz teksta (dd.mm.yyyy.)."""
-    try:
-        html = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"}).text
-        m = META_RE.search(html)
-        if m:
-            d = parse_date(m.group(1))
-            if d:
-                return d
-    except Exception:
-        pass
-    m = HR_DATUM_RE.search((text or "")[:1500])
-    if m:
-        try:
-            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
-        except ValueError:
-            pass
-    return None
-
-
-def ai_ocjena(oai, model, kontekst, title, text):
-    today = date.today()
-    cutoff = today - timedelta(days=DANA_UNAZAD)
-    prompt = f"""Ocijeni vijest za praćenje klijenta.
-
-DANAŠNJI DATUM: {today:%d.%m.%Y.}
-Ako je vijest starija od {cutoff:%d.%m.%Y.} ili se ne može datirati, ocijeni s 1.
-
-KONTEKST KLIJENTA:
-{kontekst}
-
-PRAVILA:
-- relevantnost: broj od 1 do 5, može s decimalom (npr. 2.5).
-  5 = ključno, 4 = izravno relevantno, 3 = relevantno, 2 = površno povezano, 1 = nema veze.
-- Oglasi za nekretnine, sadržaj agencija, sport i crna kronika: 1.
-- Vijesti iz izvora koji nisu hrvatski, bosanski ni crnogorski: 1, osim ako se tiču HR, BA, ME ili EU politike relevantne za klijenta.
-- zemlja: država o kojoj vijest govori. Dopušteno: HR, BA, ME, EU, OSTALO.
-- oznaka: "Nabava" za javne nabave i tendere, "Javno savjetovanje" za javna savjetovanja, inače prazan niz.
-
-Odgovori isključivo JSON objektom:
-{{"relevantnost": <broj>, "zemlja": "<HR|BA|ME|EU|OSTALO>", "oznaka": "<tekst>", "sazetak": "<2 rečenice na hrvatskom>"}}
-
-Naslov: {title}
-Sadržaj: {text[:3000]}"""
-
-    response = oai.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": "Ti si analitičar vijesti. Odgovaraš isključivo JSON-om."},
-            {"role": "user", "content": prompt},
-        ],
-        response_format={"type": "json_object"},
-        max_tokens=250,
-        temperature=0,
-    )
-    data = json.loads(response.choices[0].message.content)
-    score = max(1.0, min(5.0, float(data.get("relevantnost", 1))))
-    zemlja = str(data.get("zemlja", "OSTALO")).upper()
-    if zemlja not in ZASTAVE:
-        zemlja = "OSTALO"
-    return score, data.get("oznaka", "").strip(), zemlja, data.get("sazetak", "").strip()
-
-
-def _obradi(url, item, oai, model, kontekst, start, today):
-    pub = stvarni_datum(url, item.text)
-    if not pub or pub < start or pub > today or not item.text:
-        return "datum", None
-    try:
-        score, oznaka, zemlja, sazetak = ai_ocjena(oai, model, kontekst, item.title, item.text)
-    except Exception as e:
-        return "greska", f"OpenAI, {url}: {e}"
-    if score < MIN_RELEVANTNOST:
-        return "relevantnost", None
-    return "ok", {
-        "title": item.title or url,
-        "url": url,
-        "source": urlparse(url).netloc.replace("www.", ""),
-        "date": pub.strftime("%d.%m.%Y."),
-        "sort_date": pub.isoformat(),
-        "relevantnost": score,
-        "oznaka": oznaka,
-        "zemlja": zemlja_iz_url(url) or zemlja,
-        "summary": sazetak or "Pregledajte članak za detalje.",
-    }
-
-
-def _pipeline(kontekst, upiti):
-    exa, oai = get_clients()
-    model = st.secrets.get("OPENAI_MODEL", "gpt-4o-mini")
-    start = (datetime.now() - timedelta(days=DANA_UNAZAD)).date()
-    today = date.today()
-
-    greske, rezultati = [], {}
-    for q in upiti:
-        try:
-            resp = exa.search_and_contents(
-                q,
-                type="auto",
-                category="news",
-                num_results=10,
-                start_published_date=start.isoformat(),
-                exclude_domains=ISKLJUCENI_IZVORI,
-                text={"max_characters": 3000},
-            )
-            for r in resp.results:
-                rezultati.setdefault(r.url, r)
-        except Exception as e:
-            greske.append(f"Exa, upit '{q[:45]}…': {e}")
-
-    stats = {"dohvaceno": len(rezultati), "datum": 0, "relevantnost": 0}
-    vijesti = []
-    with ThreadPoolExecutor(max_workers=PARALELNO) as ex:
-        futures = [
-            ex.submit(_obradi, url, item, oai, model, kontekst, start, today)
-            for url, item in rezultati.items()
-        ]
-        for f in futures:
-            status, payload = f.result()
-            if status == "ok":
-                vijesti.append(payload)
-            elif status == "datum":
-                stats["datum"] += 1
-            elif status == "relevantnost":
-                stats["relevantnost"] += 1
-            elif status == "greska":
-                greske.append(payload)
-
-    # Prvo po relevantnosti, pa unutar istog ranga po datumu (najnovije prvo)
-    vijesti.sort(key=lambda v: (v["relevantnost"], v["sort_date"]), reverse=True)
-    return {"vijesti": vijesti, "greske": greske, **stats}
-
-
-@st.cache_data(ttl=timedelta(hours=6), show_spinner=False)
-def fetch_news(client_key):
-    cfg = CLIENTS[client_key]
-    return _pipeline(cfg["kontekst"], tuple(cfg["upiti"]))
-
-
-ZBT_KONTEKST = (
-    "Tim je PA i GR agencija ZBT Consulting u Hrvatskoj, BiH i Crnoj Gori. Pratimo aktere "
-    "(institucije, regulatore, državna poduzeća, lokalnu upravu, udruge) radi javnih politika, "
-    "nabava i poslovnog razvoja. Visoka relevantnost: izjave, odluke, nacrti propisa, javna "
-    "savjetovanja, nabave i ugovori koje izravno pokreće ili potpisuje navedeni akter. "
-    "Niska relevantnost: samo spominjanje imena bez veze s odlukom, javnom politikom ili nabavom."
-)
-
-
-@st.cache_data(ttl=timedelta(hours=6), show_spinner=False)
-def fetch_akteri(akteri):
-    upiti = tuple(f"{a} izjava odluka nabava savjetovanje" for a in akteri)
-    return _pipeline(ZBT_KONTEKST, upiti)
-
-
-# ---------- ARHIVA (Supabase) ----------
-
-def _sb_url():
-    return f"{st.secrets['SUPABASE_URL']}/rest/v1/arhiva"
-
-
-def _sb_headers():
-    key = st.secrets["SUPABASE_KEY"]
-    return {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-
-
-def arhiviraj(v, klijent):
-    body = {
-        "url": v["url"], "klijent": klijent, "naslov": v["title"], "izvor": v["source"],
-        "datum": v["date"], "relevantnost": v["relevantnost"], "zemlja": v["zemlja"],
-        "oznaka": v["oznaka"], "sazetak": v["summary"], "biljeska": "",
-    }
-    r = requests.post(
-        _sb_url(),
-        headers={**_sb_headers(), "Prefer": "resolution=merge-duplicates"},
-        json=body, timeout=10,
-    )
-    r.raise_for_status()
-
-
-def arhiva_lista(klijent=None):
-    params = {"select": "*", "order": "arhivirano_at.desc"}
-    if klijent:
-        params["klijent"] = f"eq.{klijent}"
-    r = requests.get(_sb_url(), headers=_sb_headers(), params=params, timeout=10)
-    r.raise_for_status()
-    return r.json()
-
-
-def arhiva_urls():
-    return {a["url"] for a in arhiva_lista()}
-
-
-def arhiva_biljeska(url, tekst):
-    r = requests.patch(_sb_url(), headers=_sb_headers(),
-                       params={"url": f"eq.{url}"}, json={"biljeska": tekst}, timeout=10)
-    r.raise_for_status()
-
-
-def arhiva_obrisi(url):
-    r = requests.delete(_sb_url(), headers=_sb_headers(), params={"url": f"eq.{url}"}, timeout=10)
-    r.raise_for_status()
-
-
-# ---------- PRIKAZ ----------
 
 def _kljuc(url):
     return hashlib.md5(url.encode()).hexdigest()[:10]
 
 
+# ---------- ARHIVA ----------
+
+def arhiva_lista(klijent=None):
+    return core.sb_arhiva_lista(klijent)
+
+
+def arhiva_biljeska(url, tekst):
+    core.sb_arhiva_biljeska(url, tekst)
+
+
+def arhiva_obrisi(url):
+    core.sb_arhiva_obrisi(url)
+
+
+# ---------- PRIKAZ ----------
+
 def prikazi_vijesti(vijesti, klijent, prefix):
-    arhivirani = arhiva_urls()
+    try:
+        arhivirani = {a["url"] for a in core.sb_arhiva_lista()}
+    except Exception:
+        arhivirani = set()
+
     for v in vijesti:
-        zastava = ZASTAVE.get(v["zemlja"], "🌍")
-        meta = f"{zastava} {v['zemlja']}  ·  {v['date']}  ·  {v['source']}  ·  relevantnost {v['relevantnost']}"
-        if v["oznaka"]:
-            meta += f"  ·  {v['oznaka']}"
+        zastava = ZASTAVE.get(v.get("zemlja"), "🌍")
+        dijelovi = [f"{zastava} {v.get('zemlja', '')}", _fmt_datum(v.get("datum")),
+                    v.get("izvor", ""), f"relevantnost {float(v.get('relevantnost', 0)):g}"]
+        if v.get("oznaka"):
+            dijelovi.append(f"**{v['oznaka']}**")
+        meta = "  ·  ".join(d for d in dijelovi if d)
+        rok = _fmt_datum(v.get("rok")) if v.get("rok") else ""
 
         with st.container(border=True):
-            st.markdown(f"##### [{v['title']}]({v['url']})")
+            st.markdown(f"##### [{v['naslov']}]({v['url']})")
             st.caption(meta)
-            st.write(v["summary"])
-            c1, c2 = st.columns([5, 1])
+            if rok:
+                st.markdown(f'<span class="zbt-rok">Rok: {rok}</span>', unsafe_allow_html=True)
+            st.write(v.get("sazetak") or "Pregledajte članak za detalje.")
+            _, c2 = st.columns([5, 1])
             with c2:
+                k = f"{prefix}_{_kljuc(v['url'])}"
                 if v["url"] in arhivirani:
-                    st.button("Arhivirano", key=f"{prefix}_{_kljuc(v['url'])}", disabled=True)
-                elif st.button("Arhiviraj", key=f"{prefix}_{_kljuc(v['url'])}"):
-                    arhiviraj(v, klijent)
+                    st.button("Arhivirano", key=k, disabled=True)
+                elif st.button("Arhiviraj", key=k):
+                    core.sb_arhiviraj(v, klijent)
                     st.toast("Spremljeno u arhivu")
+
+
+@st.cache_data(ttl=timedelta(minutes=10), show_spinner=False)
+def _ucitaj(client_key):
+    start_d, _ = razdoblje()
+    return core.sb_vijesti(client_key, start_d), core.sb_zadnje_osvjezavanje(client_key)
 
 
 def render_client_page(client_key):
@@ -544,24 +147,34 @@ def render_client_page(client_key):
     st.title(cfg["naziv"])
     st.caption(f"Zadnja {DANA_UNAZAD} dana · prag relevantnosti {MIN_RELEVANTNOST} · sortirano po relevantnosti")
 
-    with st.spinner("Pretražujem izvore…"):
-        r = fetch_news(client_key)
+    try:
+        vijesti, zadnje = _ucitaj(client_key)
+    except Exception as e:
+        st.error(f"Ne mogu učitati vijesti iz baze: {e}")
+        return
 
-    st.caption(
-        f"Dohvaćeno {r['dohvaceno']}  ·  izbačeno (datum) {r['datum']}  ·  "
-        f"izbačeno (relevantnost) {r['relevantnost']}  ·  prikazano {len(r['vijesti'])}"
-    )
-    if st.button("Osvježi"):
-        fetch_news.clear()
-        st.rerun()
-
-    if r["greske"]:
-        with st.expander(f"Greške pri dohvaćanju ({len(r['greske'])})"):
-            for g in r["greske"][:30]:
-                st.code(g)
+    if zadnje:
+        t = datetime.fromisoformat(zadnje["pokrenuto_at"].replace("Z", "+00:00")).astimezone()
+        st.caption(
+            f"Zadnje osvježavanje {t:%d.%m.%Y. u %H:%M}  ·  pretraga {zadnje.get('pretrage', 0)}  ·  "
+            f"pronađeno {zadnje.get('pronadeno', 0)}  ·  spremljeno {zadnje.get('spremljeno', 0)}"
+        )
+        if zadnje.get("greske"):
+            with st.expander("Greške pri zadnjem osvježavanju"):
+                st.code(zadnje["greske"])
+    else:
+        st.info("Osvježavanje još nije pokrenuto. Pokrenite ga na GitHubu: Actions → Osvjezavanje vijesti → Run workflow.")
 
     st.divider()
-    if not r["vijesti"]:
+    if not vijesti:
         st.info(f"Nema relevantnih objava u zadnja {DANA_UNAZAD} dana.")
         return
-    prikazi_vijesti(r["vijesti"], cfg["naziv"], prefix=client_key)
+    prikazi_vijesti(vijesti, cfg["naziv"], prefix=client_key)
+
+
+@st.cache_data(ttl=timedelta(hours=6), show_spinner=False)
+def fetch_akteri(akteri):
+    """Pretraga na zahtjev (stranica Akteri). Svaka nova kombinacija aktera trosi pretrage."""
+    start_d, today = razdoblje()
+    vijesti, _ = core.trazi_aktere(list(akteri), start_d, today)
+    return {"vijesti": vijesti, "dohvaceno": len(vijesti)}
