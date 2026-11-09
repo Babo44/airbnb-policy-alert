@@ -1,29 +1,73 @@
-import streamlit as st
-from utils import start, CLIENTS, fetch_akteri, prikazi_vijesti
-
-start()
-st.title("Akteri")
-st.caption("Vijesti o ljudima i institucijama koje pratite, zadnja tri dana")
-
-klijent = st.selectbox("Klijent", list(CLIENTS), format_func=lambda k: CLIENTS[k]["naziv"])
-cfg = CLIENTS[klijent]
-
-izbor = st.multiselect("Akteri", cfg["akteri"], default=cfg["akteri"][:3])
-dodatni = st.text_input("Dodatni akteri (odvojeni zarezom)")
-svi = izbor + [x.strip() for x in dodatni.split(",") if x.strip()]
-svi = tuple(svi[:8])
-
-if not svi:
-    st.info("Odaberite barem jednog aktera.")
-    st.stop()
-
-with st.spinner("Pretražujem…"):
-    r = fetch_akteri(klijent, svi)
-
-st.caption(f"Dohvaćeno {r['dohvaceno']}  ·  prikazano {len(r['vijesti'])}")
-st.divider()
-
-if not r["vijesti"]:
-    st.info("Nema relevantnih objava za odabrane aktere.")
-else:
-    prikazi_vijesti(r["vijesti"], cfg["naziv"], prefix=f"akt_{klijent}")
+AKTERI = {
+    "Zakonodavna vlast": [
+        "Hrvatski sabor",
+        "Odbor za unutarnju politiku i nacionalnu sigurnost",
+        "Odbor za gospodarstvo",
+        "Odbor za turizam",
+        "Odbor za europske poslove",
+    ],
+    "Vlada i ministarstva": [
+        "Vlada Republike Hrvatske",
+        "Ministarstvo gospodarstva",
+        "Ministarstvo financija",
+        "Ministarstvo unutarnjih poslova",
+        "Ministarstvo obrane",
+        "Ministarstvo turizma i sporta",
+        "Ministarstvo prometa",
+        "Ministarstvo prostornoga uređenja i graditeljstva",
+        "Ministarstvo znanosti, obrazovanja i mladih",
+        "Ministarstvo pravosuđa",
+    ],
+    "Regulatori i nadzor": [
+        "HAKOM",
+        "HERA",
+        "AZTN Agencija za zaštitu tržišnog natjecanja",
+        "AZOP Agencija za zaštitu osobnih podataka",
+        "ASK Agencija za sprječavanje korupcije",
+        "Državna revizija",
+        "CERT.hr",
+        "ZSIS",
+    ],
+    "Sigurnosne službe": [
+        "SOA Sigurnosno-obavještajna agencija",
+        "VSOA Vojna sigurnosno-obavještajna agencija",
+        "MORH",
+        "MUP",
+    ],
+    "Državna poduzeća (potencijalni naručitelji)": [
+        "HEP",
+        "HOPS",
+        "HAC Hrvatske autoceste",
+        "HŽ Infrastruktura",
+        "Croatia Control",
+        "Plinacro",
+        "CARNET",
+        "Hrvatske vode",
+        "Zračne luke Zagreb",
+        "Zračne luke Split",
+    ],
+    "Lokalna uprava": [
+        "Grad Zagreb",
+        "Grad Split",
+        "Grad Rijeka",
+        "Grad Dubrovnik",
+        "Istarska županija",
+        "Primorsko-goranska županija",
+    ],
+    "Udruge i struka": [
+        "Hrvatska gospodarska komora (HGK)",
+        "Hrvatska udruga poslodavaca (HUP)",
+        "Hrvatska turistička zajednica (HTZ)",
+        "Hrvatska udruga obiteljskog smještaja",
+        "Glas poduzetnika",
+    ],
+    "BiH i Crna Gora": [
+        "Ministarstvo sigurnosti BiH",
+        "Ministarstvo komunikacija i prometa BiH",
+        "Agencija za javne nabavke BiH",
+        "Elektroprivreda BiH",
+        "Ministarstvo unutrašnjih poslova Crne Gore",
+        "Uprava za javne nabavke Crne Gore",
+        "EPCG Elektroprivreda Crne Gore",
+    ],
+}
