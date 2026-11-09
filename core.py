@@ -33,7 +33,6 @@ WEB_FETCH = "web_fetch_20250910"
 FETCH_BETA = "web-fetch-2025-09-10"
 
 UA = {"User-Agent": "Mozilla/5.0 (compatible; ZBT-pracenje/1.0)"}
-USER_LOCATION = {"type": "approximate", "city": "Zagreb", "country": "HR", "timezone": "Europe/Zagreb"}
 
 BLOKIRANO = [
     "xinhuanet.com", "news.cn", "globaltimes.cn", "chinadaily.com.cn",
@@ -267,7 +266,8 @@ def _model():
 
 
 def alat_pretraga(max_uses, allowed=None):
-    t = {"type": WEB_SEARCH, "name": "web_search", "max_uses": max_uses, "user_location": USER_LOCATION}
+    # Bez user_location: API ne podrzava lokalizaciju za HR (greska 400).
+    t = {"type": WEB_SEARCH, "name": "web_search", "max_uses": max_uses}
     if allowed:
         t["allowed_domains"] = allowed
     else:
