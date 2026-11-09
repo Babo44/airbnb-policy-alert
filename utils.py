@@ -1,6 +1,7 @@
 """Prikaz u Streamlit aplikaciji. Pretraga se radi u osvjezi.py (GitHub Actions),
 a aplikacija cita gotove rezultate iz Supabasea."""
 import hashlib
+import hmac
 import os
 from datetime import datetime, timedelta
 
@@ -53,17 +54,29 @@ hr { margin: 1.25rem 0; border: none; border-top: 1px solid var(--line); }
            padding:1px 8px; font-size:.78rem; font-weight:600; margin-left:4px; }
 """
 
-KLJUCEVI = ["ANTHROPIC_API_KEY", "SUPABASE_URL", "SUPABASE_KEY", "CLAUDE_MODEL"]
+KLJUCEVI = ["ANTHROPIC_API_KEY", "EXA_API_KEY", "SUPABASE_URL", "SUPABASE_KEY", "CLAUDE_MODEL"]
+
+
+def pristupni_kljuc():
+    """Kljuc izveden iz lozinke. Nalazi se u adresi stranice nakon prijave, pa oznaka (bookmark)
+    i poveznice s naslovnice otvaraju aplikaciju bez ponovnog upisivanja lozinke.
+    Promjena APP_PASSWORD ponistava sve stare poveznice."""
+    return hmac.new(st.secrets["APP_PASSWORD"].encode(), b"zbt-pracenje", hashlib.sha256).hexdigest()[:24]
 
 
 def check_password():
-    if st.session_state.get("password_correct"):
+    kljuc = pristupni_kljuc()
+    if st.session_state.get("password_correct") or hmac.compare_digest(st.query_params.get("k", ""), kljuc):
+        st.session_state["password_correct"] = True
+        if st.query_params.get("k") != kljuc:
+            st.query_params["k"] = kljuc  # adresa uvijek nosi kljuc, pa se moze spremiti kao oznaka
         return True
     st.title("Prijava")
     pw = st.text_input("Lozinka", type="password")
     if pw:
         if pw == st.secrets["APP_PASSWORD"]:
             st.session_state["password_correct"] = True
+            st.query_params["k"] = kljuc
             st.rerun()
         st.error("Netočna lozinka.")
     return False
