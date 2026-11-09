@@ -5,6 +5,10 @@ import streamlit as st
 from exa_py import Exa
 from openai import OpenAI
 
+import re
+import requests
+from datetime import date
+
 DANA_UNAZAD = 3
 MIN_RELEVANTNOST = 2.5
 
@@ -156,6 +160,10 @@ def parse_date(raw):
 def ai_ocjena(oai, kontekst, title, text):
     prompt = f"""Ocijeni vijest za praćenje klijenta.
 
+DANAŠNJI DATUM: {date.today().strftime('%d.%m.%Y.')}
+Ako je vijest objavljena prije {(date.today() - timedelta(days=DANA_UNAZAD)).strftime('%d.%m.%Y.')}
+ili ju je nemoguće datirati, ocijeni s 1, bez obzira na temu.
+
 KONTEKST KLIJENTA:
 {kontekst}
 
@@ -187,6 +195,35 @@ Sadržaj: {text[:3000]}"""
     score = max(1.0, min(5.0, float(data.get("relevantnost", 1))))
     return score, data.get("oznaka", "").strip(), data.get("sazetak", "").strip()
 
+META_RE = re.compile(
+    r'<meta[^>]+(?:property|name|itemprop)=["\']'
+    r'(?:article:published_time|og:published_time|datePublished|pubdate|date)["\']'
+    r'[^>]*content=["\']([^"\']+)["\']',
+    re.I,
+)
+HR_DATUM_RE = re.compile(r'\b(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})\.?')
+
+
+def stvarni_datum(url, text):
+    """Datum čita sa stranice (meta oznake), pa iz teksta (hrvatski format dd.mm.yyyy.).
+    Vraća None ako datum nije moguće potvrditi."""
+    try:
+        html = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"}).text
+        m = META_RE.search(html)
+        if m:
+            d = parse_date(m.group(1))
+            if d:
+                return d
+    except Exception:
+        pass
+
+    m = HR_DATUM_RE.search((text or "")[:1500])
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            pass
+    return None
 
 @st.cache_data(ttl=timedelta(hours=6), show_spinner=False)
 def fetch_news(client_key):
@@ -218,8 +255,9 @@ def fetch_news(client_key):
     izbaceno_relevantnost = 0
 
     for url, item in rezultati.items():
-        pub = parse_date(item.published_date)
-        if not pub or pub < start or not item.text:
+        pub = stvarni_datum(url, item.text)
+        today = date.today()
+        if not pub or pub < start or pub > today or not item.text:
             izbaceno_datum += 1
             continue
         try:
