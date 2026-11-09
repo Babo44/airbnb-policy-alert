@@ -6,7 +6,7 @@ import sys
 
 from core import (
     CLIENTS, krug_institucije, obradi_klijenta, razdoblje, rss_stavke,
-    sb_log, sb_ocisti, sb_spremi_vijesti,
+    sb_log, sb_ocisti, sb_spremi_vijesti, sazetak_potrosnje,
 )
 
 
@@ -41,6 +41,11 @@ def main():
             sb_log(key, stats, greske)
             print(f"{key}: pronađeno {stats['pronadeno']}, spremljeno {stats['spremljeno']}, "
                   f"pretraga {stats['pretrage']}, grešaka {len(greske)}")
+            print(f"   koraci: {stats['koraci']}")
+            for n in stats["napomene"]:
+                print(f"   napomena: {n}")
+            for o in stats["odbaceno"][:15]:
+                print(f"   odbačeno ({o})")
             for g in greske:
                 print(f"   - {g}")
         except Exception as e:
@@ -57,6 +62,8 @@ def main():
         print(f"Čišćenje starih vijesti nije uspjelo: {e}")
 
     print(f"Ukupno pretraga: {ukupno_pretraga}")
+    for red in sazetak_potrosnje():
+        print(red)
     if neuspjeli == len(CLIENTS):
         sys.exit(1)
     if ukupno_pretraga == 0 and ukupno_gresaka:
