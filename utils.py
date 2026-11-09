@@ -121,13 +121,14 @@ CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
 :root {
-    --bg: #F7F8FA;
+    --bg: #F4F6F7;
     --surface: #FFFFFF;
-    --ink: #0F172A;
-    --muted: #64748B;
-    --line: #E2E8F0;
-    --accent: #2563EB;
-    --accent-soft: #EFF6FF;
+    --ink: #2F3438;
+    --muted: #6B7378;
+    --line: #DDE2E5;
+    --accent: #3FA9A7;        /* tirkizna, tamnija za čitljivost na bijelom */
+    --accent-soft: #E8F6F5;
+    --brand-gray: #545A5E;
 }
 
 html, body, [class*="css"], .stApp {
@@ -165,6 +166,14 @@ h5 a {
 }
 h5 a:hover {
     color: var(--accent);
+}
+
+a {
+    color: var(--accent);
+}
+
+section[data-testid="stSidebar"] {
+    background: var(--brand-gray);
 }
 
 /* Meta tekst */
