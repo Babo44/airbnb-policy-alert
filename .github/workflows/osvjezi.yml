@@ -1,0 +1,26 @@
+name: Osvjezavanje vijesti
+
+on:
+  schedule:
+    # Vrijeme je u UTC. 05:17 UTC = 06:17 zimi / 07:17 ljeti po zagrebackom vremenu.
+    - cron: "17 5 * * *"
+    # 12:17 UTC = 13:17 zimi / 14:17 ljeti.
+    - cron: "17 12 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  osvjezi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install anthropic requests
+      - run: python osvjezi.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
