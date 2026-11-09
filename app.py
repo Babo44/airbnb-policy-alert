@@ -7,6 +7,45 @@ from utils import start
 
 start()
 
+st.markdown("""
+<style>
+#matrix-bg {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background: #2F3438;
+}
+#matrix-bg canvas { width: 100%; height: 100%; opacity: .28; }
+.stApp { background: transparent !important; }
+.stApp > header { background: transparent !important; }
+.block-container { position: relative; z-index: 1; }
+</style>
+<div id="matrix-bg"><canvas id="mx"></canvas></div>
+<script>
+const cv = document.getElementById('mx'), ctx = cv.getContext('2d');
+const chars = '01アイウエオ<>/{}[]ZBT';
+const fs = 14;
+let cols = 0, drops = [];
+function init() {
+  cv.width = window.innerWidth; cv.height = window.innerHeight;
+  cols = Math.floor(cv.width / fs);
+  drops = Array(cols).fill(1);
+}
+init();
+window.addEventListener('resize', init);
+function draw() {
+  ctx.fillStyle = 'rgba(47,52,56,0.12)';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = '#62C6C4';
+  ctx.font = fs + 'px monospace';
+  for (let i = 0; i < drops.length; i++) {
+    ctx.fillText(chars[Math.floor(Math.random() * chars.length)], i * fs, drops[i] * fs);
+    if (drops[i] * fs > cv.height && Math.random() > 0.975) drops[i] = 0;
+    drops[i]++;
+  }
+}
+setInterval(draw, 50);
+</script>
+""", unsafe_allow_html=True)
+
 BG_FILE = Path(__file__).parent / "assets" / "sabor.jpg"
 if BG_FILE.exists():
     bg_url = "data:image/jpeg;base64," + base64.b64encode(BG_FILE.read_bytes()).decode()
