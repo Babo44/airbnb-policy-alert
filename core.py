@@ -146,7 +146,7 @@ ZBT_KONTEKST = (
 )
 
 JSON_FORMAT = """Odgovori ISKLJUČIVO JSON poljem, bez ikakvog drugog teksta:
-[{"url": "točan URL iz rezultata", "naslov": "...", "izvor": "domena", "datum": "YYYY-MM-DD",
+[{"url": "točan URL iz rezultata", "naslov": "...", "izvor": "domena", "datum": "YYYY-MM-DD ili prazno ako nije poznat",
   "zemlja": "HR|BA|ME|EU|OSTALO", "relevantnost": 1-5 (može decimala),
   "oznaka": "Nabava|Javno savjetovanje|Sjednica Vlade|Sabor|Propis|" ,
   "rok": "YYYY-MM-DD ako postoji rok za komentare ili ponude, inače prazno",
@@ -199,6 +199,7 @@ META_RE = re.compile(
     re.I,
 )
 JSONLD_RE = re.compile(r'"datePublished"\s*:\s*"([^"]+)"')
+TIME_RE = re.compile(r'<time[^>]+datetime=["\']([^"\']+)["\']', re.I)
 
 
 def _datum_sa_stranice(url):
@@ -208,7 +209,7 @@ def _datum_sa_stranice(url):
         if r.status_code >= 400:
             return False, None
         html = r.text[:400_000]
-        m = META_RE.search(html) or JSONLD_RE.search(html)
+        m = META_RE.search(html) or JSONLD_RE.search(html) or TIME_RE.search(html)
         return True, parse_date(m.group(1)) if m else None
     except Exception:
         return False, None
@@ -372,7 +373,10 @@ def napomena(oznaka):
 def _uvod(start, today):
     return (
         f"Danas je {today:%d.%m.%Y.} Radiš za PA i GR agenciju ZBT Consulting.\n"
-        f"RAZDOBLJE: samo sadržaj objavljen od {start:%d.%m.%Y.} do {today:%d.%m.%Y.} Starije ne uključuj.\n"
+        f"RAZDOBLJE: sadržaj objavljen od {start:%d.%m.%Y.} do {today:%d.%m.%Y.}\n"
+        "DATUMI: izostavi samo ono što je očito starije. Ako datum objave ne vidiš u rezultatu, "
+        "SVEJEDNO uključi stavku i ostavi \"datum\" prazan: datum provjeravamo sami na stranici. "
+        "Bolje uključiti stavku nesigurnog datuma nego je izostaviti.\n"
     )
 
 
@@ -389,7 +393,7 @@ KAKO TRAŽITI:
   kad se tiču Hrvatske, BiH ili Crne Gore.
 - Polazne teme: {'; '.join(cfg['smjernice'])}.
 - Prilagodi upite prema onome što pronađeš.
-Uključi samo stavke koje si pronašao pretragom, s točnim URL-om iz rezultata. Ne izmišljaj URL-ove ni datume.
+Uključi samo stavke koje si pronašao pretragom, s točnim URL-om iz rezultata. Ne izmišljaj URL-ove.
 
 {JSON_FORMAT}"""
     tekst, urls, n = claude_poziv(prompt, [alat_pretraga(PRETRAGE_KRUG1)])
@@ -439,10 +443,10 @@ KLIJENTI:
 
 Za svaku stavku ocijeni relevantnost (1-5) za svakog klijenta za kojeg je bitna.
 Uključi stavku samo ako je barem za jednog klijenta ocjena 2.5 ili viša.
-Ne izmišljaj URL-ove ni datume.
+Ne izmišljaj URL-ove.
 
 Odgovori ISKLJUČIVO JSON poljem:
-[{{"url": "...", "naslov": "...", "izvor": "domena", "datum": "YYYY-MM-DD", "zemlja": "HR|EU",
+[{{"url": "...", "naslov": "...", "izvor": "domena", "datum": "YYYY-MM-DD ili prazno", "zemlja": "HR|EU",
    "oznaka": "Javno savjetovanje|Sjednica Vlade|Sabor|Propis|Nabava|", "rok": "YYYY-MM-DD ili prazno",
    "sazetak": "2 rečenice na hrvatskom", "klijenti": {{"airbnb": 4, "huawei": 2}}}}]"""
     tools = [
@@ -603,7 +607,7 @@ AKTERI: {', '.join(akteri)}
 
 Pronađi objave iz razdoblja u kojima navedeni akteri nešto odlučuju, izjavljuju, objavljuju, nabavljaju
 ili otvaraju savjetovanje. Pretražuj na hrvatskom, a za akteri iz BiH i Crne Gore i na lokalnom jeziku.
-Uključi samo stavke koje si pronašao pretragom, s točnim URL-om. Ne izmišljaj URL-ove ni datume.
+Uključi samo stavke koje si pronašao pretragom, s točnim URL-om. Ne izmišljaj URL-ove.
 
 {JSON_FORMAT}"""
     tekst, urls, n = claude_poziv(prompt, [alat_pretraga(PRETRAGE_AKTERI)])
