@@ -1,3 +1,4 @@
 streamlit
-openai
 exa_py
+openai
+requests
