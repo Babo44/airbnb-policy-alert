@@ -18,23 +18,23 @@ HERO = """
 <html><head><meta charset="utf-8">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono&display=swap');
-html, body { margin:0; height:100%; background:#050B14; overflow:hidden; font-family:Inter, sans-serif; }
+html, body { margin:0; height:100%; background:#2F3438; overflow:hidden; font-family:Inter, sans-serif; }
 .hero {
   position:relative; height:100%; width:100%;
-  background: linear-gradient(rgba(5,11,20,.55), rgba(5,11,20,.92)), url('__BG__') center/cover no-repeat, #050B14;
+  background: linear-gradient rgba(47,52,56,.55), rgba(47,52,56,.92)), url('__BG__') center/cover no-repeat, #050B14;
 }
 canvas { position:absolute; inset:0; width:100%; height:100%; opacity:.35; mix-blend-mode:screen; }
 .scan { position:absolute; inset:0; pointer-events:none;
   background: repeating-linear-gradient(0deg, rgba(255,255,255,.03) 0 1px, transparent 1px 3px); }
 .content { position:absolute; inset:0; display:flex; flex-direction:column; justify-content:center; padding:0 48px; color:#E2E8F0; }
-.kicker { font-family:'JetBrains Mono', monospace; font-size:12px; letter-spacing:.2em; color:#38BDF8; }
+.kicker { font-family:'JetBrains Mono', monospace; font-size:12px; letter-spacing:.2em; color:#62C6C4; }
 h1 { font-size:44px; font-weight:700; letter-spacing:-.02em; margin:10px 0 8px; color:#fff;
-     text-shadow:0 0 18px rgba(56,189,248,.35); }
+     text-shadow:0 0 18px rgba(98,198,196,.35); }
 p { margin:0; color:#94A3B8; font-size:15px; max-width:560px; line-height:1.6; }
 .credit { margin-top:28px; padding-top:16px; border-top:1px solid rgba(148,163,184,.25); font-size:13px; color:#CBD5E1; }
 .credit b { color:#fff; }
-.dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:#22C55E;
-       box-shadow:0 0 8px #22C55E; margin-right:8px; }
+.dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:#62C6C4;
+       box-shadow:0 0 8px #62C6C4; margin-right:8px; }
 </style></head>
 <body>
 <div class="hero">
@@ -60,7 +60,7 @@ function init() {
 init();
 window.addEventListener('resize', init);
 function draw() {
-  ctx.fillStyle = 'rgba(5,11,20,0.12)';
+  ctx.fillStyle = 'rgba(47,52,56,0.12)';
   ctx.fillRect(0, 0, cv.width, cv.height);
   ctx.fillStyle = '#38BDF8';
   ctx.font = fs + 'px JetBrains Mono, monospace';
