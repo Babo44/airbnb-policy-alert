@@ -1,7 +1,8 @@
 """Zajednicka logika: prikupljanje vijesti, odabir preko Claudea, provjera i Supabase.
 
 Nacin rada:
-1. Prikupljanje (jeftino): Exa pretraga, RSS feedovi medija i institucija, Google News.
+1. Prikupljanje (jeftino): RSS feedovi medija i institucija (zadani i automatski pronadjeni),
+   Exa pretraga, popis otvorenih e-Savjetovanja i javne nabave iz TED-a (sluzbeni EU oglasnik).
 2. Predfiltar po kljucnim rijecima (besplatno).
 3. Claude (zadano Sonnet) sastavlja nekoliko svjezih upita, a zatim kao urednik bira
    relevantno, ocjenjuje i predlaze dodatne upite za drugi krug. Kandidati koji su vec
@@ -12,7 +13,6 @@ Nacin rada:
 Koriste je osvjezi.py (GitHub Actions) i Streamlit aplikacija. Kljucevi iz varijabli okruzenja:
 ANTHROPIC_API_KEY, EXA_API_KEY, SUPABASE_URL, SUPABASE_KEY, CLAUDE_MODEL (neobavezno).
 """
-import base64
 import hashlib
 import json
 import os
@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
-from urllib.parse import quote, quote_plus, urlparse
+from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree as ET
 
 import anthropic
@@ -34,10 +34,9 @@ DANA_UNAZAD = 3
 MIN_RELEVANTNOST = 2.5
 
 EXA_REZULTATA = 10          # po upitu
-MAX_KANDIDATA = 120         # koliko naslova po klijentu ide Claudeu na odabir
+MAX_KANDIDATA = 200         # koliko naslova po klijentu ide Claudeu na odabir
 DODATNIH_UPITA = 3          # drugi krug: koliko upita Claude smije predložiti
-SVJEZIH_EXA = 2             # svježi upiti koje Claude sastavi na početku pokretanja (Exa se plaća po upitu)
-SVJEZIH_GN = 3              # svježi upiti za Google News (besplatno)
+SVJEZIH_EXA = 3             # svježi upiti koje Claude sastavi na početku pokretanja (Exa se plaća po upitu)
 TEKST_ZNAKOVA = 3000        # koliko teksta članka ide Claudeu za sažetak
 MIN_TEKST = 400             # ispod toga se smatra da tekst članka nije dostupan
 SAZETAKA_PO_POZIVU = 12
@@ -77,7 +76,7 @@ ZASTAVE = {"HR": "🇭🇷", "BA": "🇧🇦", "ME": "🇲🇪", "EU": "🇪🇺
 TLD_ZEMLJA = {".hr": "HR", ".ba": "BA", ".me": "ME"}
 
 INSTITUCIJE_DOMENE = [
-    "esavjetovanja.gov.hr", "vlada.gov.hr", "sabor.hr", "narodne-novine.nn.hr",
+    "esavjetovanja.gov.hr", "vlada.gov.hr", "sabor.hr", "narodne-novine.nn.hr", "eojn.hr",
     "mint.gov.hr", "mfin.gov.hr", "mingo.gov.hr", "mup.gov.hr", "morh.gov.hr",
     "porezna-uprava.gov.hr", "hakom.hr", "hanfa.hr", "hera.hr", "halmed.hr", "aztn.hr",
     "cert.hr", "htz.hr", "zagreb.hr", "split.hr", "rijeka.hr", "dubrovnik.hr",
@@ -85,7 +84,7 @@ INSTITUCIJE_DOMENE = [
 ]
 # Portali koji odbijaju automatske zahtjeve: za njih se, kad stranica nije dostupna,
 # prihvaca datum koji vraca Exa (samo ako je unutar razdoblja).
-BLOKIRAJU_PROVJERU = ["netokracija.com"]
+BLOKIRAJU_PROVJERU = ["netokracija.com", "hina.hr"]
 
 INSTITUCIJE_UPITI = [
     "javno savjetovanje nacrt zakona pravilnika",
@@ -110,6 +109,38 @@ RSS_FEEDOVI = [
     ("https://www.novilist.hr/feed/", "novilist.hr", False),
 ]
 
+# Portali i institucije ciji se RSS feed pronalazi automatski pri svakom pokretanju
+# (oznaka feeda na naslovnici, zatim uobicajene adrese). Log pokazuje sto je pronadjeno.
+PORTALI_AUTO = [
+    # nacionalni
+    "24sata.hr", "net.hr", "dnevnik.hr", "rtl.hr", "hrt.hr", "nacional.hr", "direktno.hr", "narod.hr",
+    # poslovni i specijalizirani
+    "lidermedia.hr", "forbes.hr", "mojnovac.hr", "bug.hr", "hrturizam.hr", "ictbusiness.info",
+    "netokracija.com", "bloombergadria.com", "energetika-net.com",
+    # regionalni
+    "slobodnadalmacija.hr", "glasistre.hr", "glas-slavonije.hr", "zadarski.hr", "dulist.hr",
+    "dubrovackivjesnik.hr", "sibenik.in", "istarski.hr",
+    # BiH i Crna Gora
+    "klix.ba", "n1info.ba", "avaz.ba", "vijesti.me", "cdm.me", "rtcg.me",
+    # institucije
+    "sabor.hr", "mint.gov.hr", "mfin.gov.hr", "mingo.gov.hr", "mup.gov.hr", "morh.gov.hr",
+    "mpgi.gov.hr", "hakom.hr", "hanfa.hr", "aztn.hr", "cert.hr", "htz.hr", "porezna-uprava.gov.hr",
+]
+
+# Javne nabave (TED): koje se objave salju uredniku pojedinog klijenta.
+# Objava prolazi ako naslov sadrzi neku od rijeci ili CPV oznaka pocinje nekim od prefiksa.
+NABAVA = {
+    "huawei": {"rijeci": ["telekom", "5g", "mrež", "optičk", "komunikacij", "širokopojas", "bazn", "radio"],
+               "cpv": ["324", "325", "3223", "642", "5033"]},
+    "weytec": {"rijeci": ["kontroln", "nadzorn", "dispeč", "video zid", "videozid", "videonadzor", "centar upravljanja",
+                          "upravljanje prometom", "operativn", "zapovjed", "komandn", "kvm"],
+               "cpv": ["3232", "3233", "3512", "3497", "3571"]},
+    "envoid": {"rijeci": ["mobiln", "kibernet", "informacijske sigurnosti", "informacijsku sigurnost", "mdm",
+                          "endpoint", "antivirus", "zaštita podataka"],
+               "cpv": ["4873", "4876", "3225"]},
+}
+TED_DRZAVE = {"HRV": "HR", "BIH": "BA", "MNE": "ME"}
+
 CLIENTS = {
     "airbnb": {
         "naziv": "Airbnb",
@@ -127,8 +158,6 @@ CLIENTS = {
             "Zakon o upravljanju i održavanju zgrada suglasnost suvlasnika najam",
             "udruga iznajmljivača obiteljski smještaj",
         ],
-        "gn_upiti": ["kratkoročni najam", "iznajmljivači paušal", "plan upravljanja destinacijom",
-                     "turistički najam zakon", "Airbnb Hrvatska"],
         "kljucne_rijeci": ["najam", "iznajmljiva", "apartman", "airbnb", "smještaj", "paušal", "noćenj",
                            "turizam", "turist", "destinacij"],
     },
@@ -147,7 +176,6 @@ CLIENTS = {
             "odnosi Europske unije i Kine trgovina",
             "kineska ulaganja Hrvatska",
         ],
-        "gn_upiti": ["Huawei", "Kina Hrvatska", "EU Kina", "kibernetička sigurnost NIS2", "5G Hrvatska"],
         "kljucne_rijeci": ["huawei", "kina", "kines", "kinesk", "peking", "5g", "kibernet", "nis2",
                            "telekom", "hakom", "china"],
     },
@@ -167,8 +195,6 @@ CLIENTS = {
             "Croatia Control zračna luka investicija",
             "kritična infrastruktura nabava opreme obrana",
         ],
-        "gn_upiti": ["javna nabava centar upravljanja", "HOPS nabava", "Croatia Control",
-                     "MORH nabava", "kritična infrastruktura"],
         "kljucne_rijeci": ["nabav", "tender", "kontroln", "centar upravljanja", "hep", "hops", "autocest",
                            "zračn", "morh", "infrastruktur", "croatia control"],
     },
@@ -188,7 +214,6 @@ CLIENTS = {
             "NIS2 javni sektor mobilni uređaji",
             "Pegasus špijuniranje istraga",
         ],
-        "gn_upiti": ["špijunski softver", "Pegasus", "kibernetički napad", "CERT.hr", "hakerski napad mobitel"],
         "kljucne_rijeci": ["spyware", "pegasus", "špijun", "mobitel", "mobiln", "kibernet", "hak", "cert",
                            "nis2", "napad"],
     },
@@ -221,6 +246,16 @@ def parse_date(raw):
         return datetime.strptime(raw[:10], "%Y-%m-%d").date()
     except ValueError:
         return None
+
+
+def _norm_rok(raw):
+    """Rok u obliku YYYY-MM-DD ili prazno (prikaz i ciscenje se oslanjaju na taj oblik)."""
+    raw = str(raw or "").strip()
+    d = parse_date(raw)
+    if not d:
+        m = HR_BROJ_RE.search(raw)
+        d = _dt(m.group(3), m.group(2), m.group(1)) if m else None
+    return d.isoformat() if d else ""
 
 
 def _rss_datum(raw):
@@ -323,8 +358,9 @@ def _odlomci(html):
     return " ".join(out)
 
 
-def tekst_clanka(html, max_znakova=TEKST_ZNAKOVA):
-    """Tekst clanka iz HTML-a (odlomci unutar <article>, inace svi odlomci). Prazno ako ga nema."""
+def tekst_clanka(html, max_znakova=TEKST_ZNAKOVA, cijela_stranica=False):
+    """Tekst clanka iz HTML-a (odlomci unutar <article>, inace svi odlomci). Prazno ako ga nema.
+    cijela_stranica=True (sluzbene stranice bez odlomaka): kao zadnja opcija sav vidljivi tekst."""
     if not html:
         return ""
     html = SMECE_RE.sub(" ", html)
@@ -332,6 +368,9 @@ def tekst_clanka(html, max_znakova=TEKST_ZNAKOVA):
     tekst = _odlomci(m.group(0)) if m else ""
     if len(tekst) < MIN_TEKST:
         tekst = _odlomci(html)
+    if len(tekst) < MIN_TEKST and cijela_stranica:
+        tijelo = re.search(r"(?is)<body\b.*", html)
+        tekst = re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", tijelo.group(0) if tijelo else html))).strip()
     return tekst[:max_znakova]
 
 
@@ -410,7 +449,6 @@ CIJENE = {  # $ po milijunu tokena (ulaz, izlaz), platform.claude.com/docs/about
 }
 CIJENA_EXA = 0.005  # gruba procjena po upitu sa sadrzajem
 POTROSNJA = {"exa_upiti": 0}
-GN_POVEZNICE = {"ukupno": 0, "pretvoreno": 0}
 
 
 def _zabiljezi(model, usage):
@@ -423,9 +461,6 @@ def _zabiljezi(model, usage):
 
 def sazetak_potrosnje():
     redovi, ukupno = [], 0.0
-    if GN_POVEZNICE["ukupno"]:
-        redovi.append(f"Google News poveznice: {GN_POVEZNICE['pretvoreno']} od {GN_POVEZNICE['ukupno']} "
-                      "pretvoreno u izvornu adresu članka")
     for model, p in POTROSNJA.items():
         if model == "exa_upiti":
             continue
@@ -478,122 +513,268 @@ def exa_pretraga(upiti, start, institucije=False):
     return out, greske
 
 
-def _parsiraj_xml(r):
-    """Neki feedovi (npr. Vladin) u zaglavlju navode krivi znakovni zapis: tada ga zanemari."""
-    try:
-        return ET.fromstring(r.content)
-    except ET.ParseError:
-        for enc in ("utf-8", "windows-1250", r.apparent_encoding or "utf-8"):
-            try:
-                tekst = r.content.decode(enc)
-                break
-            except (UnicodeDecodeError, LookupError):
-                continue
-        else:
-            tekst = r.content.decode("utf-8", errors="replace")
-        tekst = re.sub(r"^\s*<\?xml[^>]*\?>", "", tekst)
-        return ET.fromstring(tekst)
+def _lokalno(tag):
+    return str(tag).rsplit("}", 1)[-1].lower()
 
 
-def _citaj_rss(url, izvor, start, today, porijeklo):
-    r = requests.get(url, timeout=15, headers=UA)
-    r.raise_for_status()
-    root = _parsiraj_xml(r)
+def _stavke_iz_xml(root):
+    """Stavke RSS ili Atom feeda."""
     out = []
-    for it in root.iter("item"):
-        link = (it.findtext("link") or "").strip()
-        d = _rss_datum(it.findtext("pubDate"))
-        if not link or not d or not (start <= d <= today):
+    for el in root.iter():
+        if _lokalno(el.tag) not in ("item", "entry"):
             continue
-        izv = izvor
-        src = it.find("source")
-        naslov = it.findtext("title") or ""
-        izvor_url = ""
-        if src is not None and (src.text or "").strip():
-            izv = src.text.strip()  # Google News navodi stvarni izvor
-            izvor_url = src.get("url") or ""
-            if naslov.endswith(f" - {izv}"):
-                naslov = naslov[: -len(izv) - 3]
-        out.append(_kandidat(link, naslov, izv, it.findtext("description") or "",
-                             datum=d, pouzdan=True, porijeklo=porijeklo, izvor_url=izvor_url))
+        st = {"title": "", "link": "", "date": "", "desc": ""}
+        for c in el:
+            ime, txt = _lokalno(c.tag), (c.text or "").strip()
+            if ime == "title":
+                st["title"] = txt
+            elif ime == "link":
+                href = (c.get("href") or "").strip()
+                if href and (c.get("rel") in (None, "alternate") or not st["link"]):
+                    st["link"] = href
+                elif txt:
+                    st["link"] = txt
+            elif ime in ("pubdate", "published", "date") or (ime == "updated" and not st["date"]):
+                st["date"] = txt
+            elif ime in ("description", "summary") and not st["desc"]:
+                st["desc"] = txt
+        out.append(st)
     return out
 
 
+def _polje(blok, ime):
+    m = re.search(rf"(?is)<{ime}\b[^>]*>(.*?)</{ime}>", blok)
+    if not m:
+        return ""
+    t = m.group(1).strip()
+    c = re.match(r"(?s)<!\[CDATA\[(.*?)\]\]>", t)
+    return unescape(c.group(1) if c else t).strip()
+
+
+def _stavke_regexom(tekst):
+    """Za feedove s neispravnim XML-om (npr. Novi list): stavke se vade bez XML parsera."""
+    out = []
+    for blok in re.findall(r"(?is)<(?:item|entry)\b.*?</(?:item|entry)>", tekst):
+        link = _polje(blok, "link")
+        if not link:
+            m = re.search(r'(?is)<link\b[^>]*href=["\']([^"\']+)["\']', blok)
+            link = unescape(m.group(1)) if m else ""
+        out.append({"title": _polje(blok, "title"), "link": link,
+                    "date": (_polje(blok, "pubDate") or _polje(blok, "published")
+                             or _polje(blok, "updated") or _polje(blok, "dc:date")),
+                    "desc": _polje(blok, "description") or _polje(blok, "summary")})
+    return out
+
+
+def _feed_stavke(url):
+    """Sve stavke feeda. Baca gresku ako adresa nije dostupna."""
+    r = requests.get(url, timeout=15, headers=UA)
+    r.raise_for_status()
+    try:
+        return _stavke_iz_xml(ET.fromstring(r.content))
+    except ET.ParseError:
+        pass
+    tekst = None
+    for enc in ("utf-8", "windows-1250"):
+        try:
+            tekst = r.content.decode(enc)
+            break
+        except (UnicodeDecodeError, LookupError):
+            continue
+    if tekst is None:
+        tekst = r.content.decode("utf-8", errors="replace")
+    try:  # krivo navedeni znakovni zapis u zaglavlju (npr. Vladin feed)
+        return _stavke_iz_xml(ET.fromstring(re.sub(r"^\s*<\?xml[^>]*\?>", "", tekst)))
+    except ET.ParseError:
+        return _stavke_regexom(tekst)
+
+
+def _citaj_rss(url, izvor, start, today, porijeklo="RSS"):
+    """Vraca (kandidati u razdoblju, ukupan broj stavki u feedu)."""
+    stavke = _feed_stavke(url)
+    out = []
+    for st in stavke:
+        link = urljoin(url, st["link"].strip()) if st["link"] else ""
+        d = _rss_datum(st["date"])
+        if not link.startswith("http") or not d or not (start <= d <= today):
+            continue
+        out.append(_kandidat(link, st["title"], izvor, st["desc"], datum=d, pouzdan=True, porijeklo=porijeklo))
+    return out, len(stavke)
+
+
+FEED_LINK_RE = re.compile(r'(?is)<link\b[^>]*type=["\']application/(?:rss|atom)\+xml["\'][^>]*>')
+HREF_RE = re.compile(r'(?is)href=["\']([^"\']+)["\']')
+UOBICAJENE_ADRESE = ["/feed", "/rss", "/feed/", "/rss.xml", "/rss/", "/index.xml"]
+
+
+def otkrij_feed(domena, start, today):
+    """Pronalazi RSS feed portala. Vraca (kandidati, opis za log)."""
+    adrese = []
+    for baza in (f"https://www.{domena}", f"https://{domena}"):
+        try:
+            html = _preuzmi(baza, rok_s=12, max_bajtova=300_000)
+        except Exception:
+            html = None
+        if html:
+            for oznaka in FEED_LINK_RE.findall(html):
+                m = HREF_RE.search(oznaka)
+                if m and "comment" not in m.group(1).lower():
+                    adrese.append(urljoin(baza + "/", unescape(m.group(1))))
+            adrese += [baza + put for put in UOBICAJENE_ADRESE]
+            break
+    else:
+        return [], "stranica nije dostupna"
+    isprobano = set()
+    for adresa in adrese[:9]:
+        if adresa in isprobano:
+            continue
+        isprobano.add(adresa)
+        try:
+            st, ukupno = _citaj_rss(adresa, domena, start, today)
+        except Exception:
+            continue
+        if ukupno:
+            return st, f"{len(st)} stavki u razdoblju (feed: {adresa})"
+    return [], "feed nije pronađen"
+
+
 def rss_stavke(start, today):
-    """Svi RSS feedovi, jednom za sve klijente. Vraca (kandidati, napomene)."""
+    """Zadani i automatski pronadjeni feedovi, jednom za sve klijente. Vraca (kandidati, napomene)."""
     out, napomene = [], []
     for url, izvor, potvrden in RSS_FEEDOVI:
         try:
-            st = _citaj_rss(url, izvor, start, today, "RSS")
+            st, _ = _citaj_rss(url, izvor, start, today)
             out += st
             napomene.append(f"RSS {izvor}: {len(st)} stavki")
         except Exception as e:
             napomene.append(f"RSS {izvor} {'GREŠKA' if potvrden else 'ne radi (preskočeno)'}: {str(e)[:80]}")
+    zadani = {izvor for _, izvor, _ in RSS_FEEDOVI}
+    auto = [d for d in PORTALI_AUTO if d not in zadani]
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        rezultati = list(ex.map(lambda d: otkrij_feed(d, start, today), auto))
+    pronadjeno = 0
+    for domena, (st, opis) in zip(auto, rezultati):
+        out += st
+        pronadjeno += "feed:" in opis
+        napomene.append(f"RSS (auto) {domena}: {opis}")
+    napomene.append(f"RSS (auto): feed pronađen za {pronadjeno} od {len(auto)} portala i institucija")
     return out, napomene
 
 
-def google_news(upiti, start, today, dana=DANA_UNAZAD, porijeklo="Google News"):
-    out, greske = [], []
-    for q in upiti:
-        url = (f"https://news.google.com/rss/search?q={quote_plus(q + f' when:{dana}d')}"
-               "&hl=hr&gl=HR&ceid=HR:hr")
+# ---------- E-SAVJETOVANJA ----------
+
+ESAV_URL = "https://esavjetovanja.gov.hr/ECon/Dashboard"
+ESAV_A_RE = re.compile(
+    r'(?is)<a\b[^>]*href=["\']([^"\']*MainScreen\?entityId=(\d+)[^"\']*)["\'][^>]*>(.*?)</a>')
+
+
+def _cisti(html_dio):
+    return re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", html_dio or ""))).strip()
+
+
+def e_savjetovanja(today):
+    """Otvorena savjetovanja s naslovnice portala e-Savjetovanja. Svako savjetovanje ocjenjuje se
+    jednom (tablica 'videno'), pa se novo savjetovanje pojavljuje kad se prvi put vidi na popisu.
+    Pisano bez uvida u stvarnu stranicu: ako vrati nula, treba prilagoditi prema izgledu stranice."""
+    html = _preuzmi(ESAV_URL, rok_s=25, max_bajtova=3_000_000)
+    if html is None:
+        raise RuntimeError("stranica nije dostupna")
+    nadjeno = {}  # entityId -> (naslov, adresa, opis)
+    redovi = re.findall(r"(?is)<tr\b.*?</tr>", html)
+    for dio in (redovi or [html]):
+        opis = _cisti(dio)[:350] if redovi else ""
+        for href, eid, unutra in ESAV_A_RE.findall(dio):
+            naslov = _cisti(unutra)
+            if len(naslov) > len(nadjeno.get(eid, ("",))[0]):
+                nadjeno[eid] = (naslov, urljoin(ESAV_URL, unescape(href)), opis)
+    out = []
+    for naslov, adresa, opis in nadjeno.values():
+        k = _kandidat(adresa, naslov, "e-Savjetovanja", opis, datum=today, pouzdan=True, porijeklo="e-Savjetovanja")
+        out.append({**k, "sluzbeni": True, "zemlja_fiksno": "HR"})
+    return out
+
+
+# ---------- JAVNE NABAVE (TED) ----------
+
+TED_URL = "https://api.ted.europa.eu/v3/notices/search"
+TED_POLJA = ["publication-number", "notice-title", "classification-cpv", "buyer-name",
+             "publication-date", "deadline-receipt-tender-date-lot", "notice-type"]
+TED_POLJA_MIN = ["publication-number", "notice-title", "classification-cpv"]  # potvrdjena u dokumentaciji
+
+
+def _ted_tekst(v):
+    """Vrijednost TED polja kao tekst (polja mogu biti rjecnici po jezicima ili liste)."""
+    if isinstance(v, dict):
+        for jezik in ("hrv", "eng"):
+            if v.get(jezik):
+                return _ted_tekst(v[jezik])
+        return _ted_tekst(next(iter(v.values()), ""))
+    if isinstance(v, (list, tuple)):
+        return ", ".join(dict.fromkeys(t for t in (_ted_tekst(x) for x in v[:6]) if t))
+    return str(v or "").strip()
+
+
+def _ted_upit(drzava, start, polja):
+    out, token = [], None
+    for _ in range(8):  # najvise 2000 objava po drzavi
+        tijelo = {"query": f"buyer-country={drzava} AND publication-date>={start:%Y%m%d}",
+                  "fields": polja, "limit": 250, "scope": "ACTIVE", "paginationMode": "ITERATION"}
+        if token:
+            tijelo["iterationNextToken"] = token
+        r = requests.post(TED_URL, json=tijelo, timeout=40, headers={**UA, "Accept": "application/json"})
+        if r.status_code >= 400:
+            raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+        data = r.json()
+        objave = data.get("notices") or []
+        out += objave
+        token = data.get("iterationNextToken")
+        if not token or not objave:
+            break
+    return out
+
+
+def ted_nabave(start, today):
+    """Objave javne nabave iz TED-a (EU oglasnik; nabave iznad EU pragova) za HR, BiH i CG.
+    Vraca (kandidati, napomene)."""
+    out, napomene = [], []
+    for drzava, zemlja in TED_DRZAVE.items():
         try:
-            out += [{**k, "upit": q} for k in _citaj_rss(url, "Google News", start, today, porijeklo)]
+            try:
+                objave = _ted_upit(drzava, start, TED_POLJA)
+            except Exception as e:
+                objave = _ted_upit(drzava, start, TED_POLJA_MIN)
+                napomene.append(f"TED {drzava}: prošireni podaci nisu dostupni ({str(e)[:90]}), koristim osnovne")
         except Exception as e:
-            greske.append(f"Google News '{q}': {str(e)[:80]}")
-    return out, greske
+            napomene.append(f"TED {drzava} GREŠKA: {str(e)[:160]}")
+            continue
+        for n in objave:
+            broj = _ted_tekst(n.get("publication-number"))
+            naslov = _ted_tekst(n.get("notice-title"))
+            if not broj or not naslov:
+                continue
+            cpv = n.get("classification-cpv") or []
+            cpv = [str(c) for c in (cpv if isinstance(cpv, (list, tuple)) else [cpv])]
+            d = parse_date(_ted_tekst(n.get("publication-date"))[:10])
+            dijelovi = [("Naručitelj", _ted_tekst(n.get("buyer-name"))), ("CPV", ", ".join(dict.fromkeys(cpv))[:60]),
+                        ("Rok za ponude", _ted_tekst(n.get("deadline-receipt-tender-date-lot"))[:10]),
+                        ("Vrsta objave", _ted_tekst(n.get("notice-type")))]
+            opis = ". ".join(f"{a}: {b}" for a, b in dijelovi if b)
+            k = _kandidat(f"https://ted.europa.eu/hr/notice/-/detail/{broj}", naslov, "TED (EU nabave)", opis,
+                          datum=d if d and start <= d <= today else today, pouzdan=True, porijeklo="TED")
+            out.append({**k, "sluzbeni": True, "zemlja_fiksno": zemlja, "cpv": cpv})
+        napomene.append(f"TED {drzava}: {len(objave)} objava")
+    return out, napomene
 
 
-def _gn_dekodiraj(url):
-    """Izvorna adresa clanka iz Google News poveznice. None ako ne uspije.
-    Nije sluzbeno sucelje: Google ga moze promijeniti, pa je sve u try/except."""
-    m = re.search(r"/articles/([^/?#]+)", url)
-    if not m:
-        return None
-    b64 = m.group(1)
-    try:  # stariji oblik: adresa je zapisana izravno u base64 dijelu poveznice
-        raw = base64.urlsafe_b64decode(b64 + "=" * (-len(b64) % 4))
-        mm = re.search(rb"https?://[\x21-\x7e]+", raw)
-        if mm and b"google." not in mm.group(0):
-            return mm.group(0).decode("ascii")
-    except Exception:
-        pass
-    r = requests.get(url, timeout=(5, 8), headers=UA, allow_redirects=True)
-    if "news.google.com" not in r.url and "consent.google" not in r.url:
-        return r.url
-    stari = re.search(r'data-n-au="([^"]+)"', r.text)
-    if stari:
-        return unescape(stari.group(1))
-    sg = re.search(r'data-n-a-sg="([^"]+)"', r.text)
-    ts = re.search(r'data-n-a-ts="([^"]+)"', r.text)
-    if not (sg and ts):
-        return None
-    zahtjev = ["Fbv4je", (
-        '["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],'
-        f'"X","X",1,[1,1,1],1,1,null,0,0,null,0],"{b64}",{ts.group(1)},"{sg.group(1)}"]'
-    )]
-    r2 = requests.post(
-        "https://news.google.com/_/DotsSplashUi/data/batchexecute",
-        headers={**UA, "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
-        data="f.req=" + quote(json.dumps([[zahtjev]])), timeout=(5, 8),
-    )
-    podaci = json.loads(r2.text.split("\n\n")[1])[:-2]
-    return json.loads(podaci[0][2])[1]
-
-
-def _izvorni_url(url):
-    """Google News poveznicu pokusa pretvoriti u izvornu adresu clanka; inace vraca istu."""
-    if "news.google.com" not in url:
-        return url
-    GN_POVEZNICE["ukupno"] += 1
-    try:
-        izvorni = _gn_dekodiraj(url)
-        if izvorni and izvorni.startswith("http") and "google." not in urlparse(izvorni).netloc:
-            GN_POVEZNICE["pretvoreno"] += 1
-            return izvorni
-    except Exception:
-        pass
-    return url
+def ted_za_klijenta(key, ted):
+    pravila = NABAVA.get(key)
+    if not pravila:
+        return []
+    def odgovara(k):
+        naslov = k["naslov"].lower()
+        return (any(r in naslov for r in pravila["rijeci"])
+                or any(c.startswith(p) for c in k.get("cpv", []) for p in pravila["cpv"]))
+    return [k for k in ted if odgovara(k)]
 
 
 def filtriraj(kandidati, kljucne):
@@ -654,7 +835,7 @@ def claude_json(prompt, kljuc, max_tokens=6000):
 
 
 def svjezi_upiti(cfg, naslovi_danas, naslovi_spremljeni, today):
-    """Claude sastavlja nekoliko novih upita za ovo pokretanje. Vraca (exa_upiti, gn_upiti).
+    """Claude sastavlja nekoliko novih upita za ovo pokretanje.
     O aktualnim dogadjajima zna samo ono sto vidi u naslovima koje mu damo."""
     danasnji = "\n".join(f"- {n}" for n in naslovi_danas[:40]) or "(nema)"
     spremljeni = "\n".join(f"- {n}" for n in naslovi_spremljeni[:25]) or "(nema)"
@@ -664,7 +845,7 @@ KLIJENT: {cfg['naziv']}
 KONTEKST: {cfg['kontekst']}
 
 STALNI UPITI (već se pretražuju, ne ponavljaj ih ni u drugim riječima):
-{chr(10).join('- ' + q for q in cfg['exa_upiti'] + cfg['gn_upiti'])}
+{chr(10).join('- ' + q for q in cfg['exa_upiti'])}
 
 NASLOVI IZ DOMAĆIH MEDIJA ZADNJIH DANA (povezani s temom klijenta):
 {danasnji}
@@ -678,11 +859,9 @@ projekte i nabave koji se u njima spominju, te susjedne teme važne za klijenta 
 Ne izmišljaj događaje: oslanjaj se na naslove i na kontekst klijenta.
 
 Odgovori ISKLJUČIVO JSON objektom:
-{{"exa": [točno {SVJEZIH_EXA} opisna upita na hrvatskom, 5 do 10 riječi],
-  "gn": [točno {SVJEZIH_GN} kratka upita na hrvatskom, 2 do 4 ključne riječi]}}"""
+{{"exa": [točno {SVJEZIH_EXA} opisna upita na hrvatskom, 5 do 10 riječi]}}"""
     data = claude_json(prompt, "exa", max_tokens=800)
-    cisti = lambda lista, n: [str(u).strip() for u in (lista or []) if str(u).strip()][:n]
-    return cisti(data.get("exa"), SVJEZIH_EXA), cisti(data.get("gn"), SVJEZIH_GN)
+    return [str(u).strip() for u in data["exa"] if str(u).strip()][:SVJEZIH_EXA]
 
 
 def sazmi(naziv, kontekst, stavke, today):
@@ -725,8 +904,10 @@ Vrati stavku za svaki članak. 5 ključno, 4 izravno relevantno, 3 relevantno, 2
             sazetak = str(d.get("sazetak") or "").strip()
             if not sazetak:
                 continue
+            # oznaka i rok iz prvog kruga (npr. iz popisa savjetovanja) ostaju ako ih tekst ne navodi
             s.update(relevantnost=score, sazetak=sazetak, iz_teksta=True,
-                     oznaka=str(d.get("oznaka") or "").strip(), rok=str(d.get("rok") or "").strip())
+                     oznaka=str(d.get("oznaka") or "").strip() or s.get("oznaka", ""),
+                     rok=_norm_rok(d.get("rok")) or s.get("rok", ""))
             obradjeno += 1
     return obradjeno
 
@@ -757,6 +938,8 @@ Ispod su prikupljene stavke (broj. [izvor | datum] naslov — isječak). Odaberi
 - Ako je isti događaj više puta, odaberi jednu, najinformativniju stavku.
 - Izvori su hrvatski, bosanskohercegovački i crnogorski portali te službene stranice. Svjetska događanja
   pratimo kroz to kako ih prenose domaći portali.
+- Stavke s izvorom "e-Savjetovanja" su otvorena javna savjetovanja, a "TED (EU nabave)" objave javne nabave.
+  Odaberi samo ona koja se tiču klijenta, upiši oznaku i rok ako se vidi u isječku.
 
 STAVKE:
 {popis}
@@ -779,11 +962,11 @@ Uključi samo stavke s relevantnošću 2.5 ili više. 5 ključno, 4 izravno rele
         odabrani.append({
             **k,
             "relevantnost": score,
-            # za Google News poveznice zemlja se odredjuje prema stranici izvora
-            "zemlja": (zemlja_iz_url(k.get("izvor_url") or k["url"]) or zemlja_iz_url(k["url"])
+            "zemlja": (k.get("zemlja_fiksno") or zemlja_iz_url(k["url"])
+                       or ("HR" if any(_domena(k["url"]).endswith(d) for d in DOMACI_EXTRA[:3]) else None)
                        or (zemlja if zemlja in ZASTAVE else "OSTALO")),
             "oznaka": str(d.get("oznaka") or "").strip(),
-            "rok": str(d.get("rok") or "").strip(),
+            "rok": _norm_rok(d.get("rok")),
             "sazetak": str(d.get("sazetak") or "").strip(),
         })
     upiti = [str(u).strip() for u in data.get("dodatni_upiti", []) if str(u).strip()][:DODATNIH_UPITA]
@@ -794,15 +977,16 @@ Uključi samo stavke s relevantnošću 2.5 ili više. 5 ključno, 4 izravno rele
 
 def _provjeri(s, start, today):
     """Vraca (stavka, None) ili (None, razlog). Usput preuzima tekst clanka za sazetak."""
-    s = {**s, "url": _izvorni_url(s["url"])}
+    s = dict(s)
     html = None
-    if "news.google.com" not in s["url"]:  # Googleova medjustranica nije clanak
+    if s.get("porijeklo") != "TED":  # TED stranica se iscrtava u pregledniku; podaci su vec u isjecku
         try:
             html = _preuzmi(s["url"])
         except Exception:
             html = None
+    tekst = tekst_clanka(html, cijela_stranica=bool(s.get("sluzbeni")))
     if s.get("pouzdan") and parse_date(s["datum"]):
-        d = parse_date(s["datum"])  # RSS i Google News daju pouzdan datum objave
+        d = parse_date(s["datum"])  # RSS, e-Savjetovanja i TED daju pouzdan datum
     else:
         if html is None:
             d_exa = parse_date(s.get("datum_exa"))
@@ -815,14 +999,13 @@ def _provjeri(s, start, today):
         if not d:
             rok = parse_date(s.get("rok"))
             if "savjetovanj" in s.get("oznaka", "").lower() and rok and today <= rok <= today + timedelta(days=90):
-                # otvoreno savjetovanje: vazan je rok
-                return {**s, "datum": today.isoformat(), "_tekst": tekst_clanka(html)}, None
+                return {**s, "datum": today.isoformat(), "_tekst": tekst}, None  # otvoreno savjetovanje: vazan je rok
             return None, "bez datuma"
     if d < start or d > today:
         return None, f"datum {d:%d.%m.%Y.}"
     if not s.get("izvor"):
         s["izvor"] = _domena(s["url"])
-    return {**s, "datum": d.isoformat(), "_tekst": tekst_clanka(html)}, None
+    return {**s, "datum": d.isoformat(), "_tekst": tekst}, None
 
 
 def provjeri_sve(stavke, start, today, odbaceno=None, nedostupne=None):
@@ -838,7 +1021,10 @@ def provjeri_sve(stavke, start, today, odbaceno=None, nedostupne=None):
 
 
 def _krug(s):
-    return (s.get("porijeklo") or "") + ("" if s.get("iz_teksta") else " · sažetak iz naslova")
+    """Porijeklo stavke; uz clanke kojima tekst nije bio dostupan stoji napomena za aplikaciju."""
+    if s.get("iz_teksta") or s.get("porijeklo") == "TED":
+        return s.get("porijeklo") or ""
+    return (s.get("porijeklo") or "") + " · sažetak iz naslova"
 
 
 def spoji(*liste):
@@ -854,11 +1040,22 @@ def spoji(*liste):
 # ---------- OBRADA ----------
 
 def zajednicki_izvori(start, today):
-    """Jednom po pokretanju: RSS i Exa pretraga institucija. Vraca (kandidati, napomene)."""
-    rss, napomene = rss_stavke(start, today)
+    """Jednom po pokretanju: RSS, e-Savjetovanja, TED i Exa pretraga institucija.
+    Vraca (kandidati, napomene)."""
+    out, napomene = rss_stavke(start, today)
+    try:
+        esav = e_savjetovanja(today)
+        out += esav
+        napomene.append(f"e-Savjetovanja: {len(esav)} savjetovanja na popisu"
+                        + ("" if esav else " (PROVJERITI: stranica je dostupna, ali popis nije prepoznat)"))
+    except Exception as e:
+        napomene.append(f"e-Savjetovanja GREŠKA: {str(e)[:120]}")
+    ted, nap = ted_nabave(start, today)
+    out += ted
+    napomene += nap
     inst, greske = exa_pretraga(INSTITUCIJE_UPITI, start, institucije=True)
     napomene.append(f"Exa institucije: {len(inst)} stavki")
-    return rss + inst, napomene + greske
+    return out + inst, napomene + greske
 
 
 def obradi_klijenta(key, start, today, zajednicki):
@@ -874,33 +1071,35 @@ def obradi_klijenta(key, start, today, zajednicki):
         napomene.append(f"popis već ocijenjenih nije dostupan ({str(e)[:80]}), pa se ocjenjuju svi kandidati. "
                         "Je li u Supabaseu napravljena tablica 'videno'?")
 
-    rss = [k for k in zajednicki if k["porijeklo"] == "RSS"]
+    po = lambda p: [k for k in zajednicki if k["porijeklo"] == p]
+    rss = po("RSS")
     vlada = [k for k in rss if k["izvor"] == "vlada.gov.hr"]  # Vladine objave uvijek idu uredniku
-    zaj = vlada + filtriraj([k for k in rss if k["izvor"] != "vlada.gov.hr"], cfg["kljucne_rijeci"])
-    inst = [k for k in zajednicki if k["porijeklo"] == "Exa institucije"]
+    mediji = filtriraj([k for k in rss if k["izvor"] != "vlada.gov.hr"], cfg["kljucne_rijeci"])
+    esav = po("e-Savjetovanja")
+    ted = ted_za_klijenta(key, po("TED"))
+    inst = po("Exa institucije")
 
     # Svjezi upiti koje Claude sastavi za ovo pokretanje
-    svj_exa, svj_gn = [], []
+    svjezi = []
     try:
         try:
             spremljeni = sb_naslovi(key)
         except Exception:
             spremljeni = []
-        svj_exa, svj_gn = svjezi_upiti(cfg, [k["naslov"] for k in zaj if k not in vlada], spremljeni, today)
+        svjezi = svjezi_upiti(cfg, [k["naslov"] for k in mediji], spremljeni, today)
     except Exception as e:
         napomene.append(f"svježi upiti nisu sastavljeni: {str(e)[:120]}")
 
-    exa1, g = exa_pretraga(cfg["exa_upiti"] + svj_exa, start)
+    exa1, g = exa_pretraga(cfg["exa_upiti"] + svjezi, start)
     greske += g
-    gn_upiti = cfg["gn_upiti"] + svj_gn
-    gn1, g = google_news(gn_upiti, start, today)
-    greske += g
-    gn_po_upitu = ", ".join(f"{q}: {sum(1 for k in gn1 if k.get('upit') == q)}" for q in gn_upiti)
 
-    # Izravni izvori prvi: kod duplikata po naslovu zadrzava se izravna poveznica, ne Googleova.
-    svi = [k for k in spoji_kandidate(zaj, inst, exa1, gn1) if je_domaci(k)]
+    # Sluzbeni izvori prvi, zatim RSS (pouzdan datum), zatim Exa: kod duplikata ostaje prvi.
+    svi = [k for k in spoji_kandidate(vlada, esav, ted, inst, mediji, exa1) if je_domaci(k)]
     novi1 = [k for k in svi if not _vidjen(k, videno)]
     kandidati = novi1[:MAX_KANDIDATA]
+    if len(novi1) > len(kandidati):
+        napomene.append(f"{len(novi1) - len(kandidati)} novih kandidata nije stalo u ovo pokretanje "
+                        f"(ograničenje {MAX_KANDIDATA}); doći će na red u sljedećem")
 
     ocijenjeni, urednik_greska = [], False
     odabrani1, dodatni = [], []
@@ -917,10 +1116,8 @@ def obradi_klijenta(key, start, today, zajednicki):
         try:
             exa2, g = exa_pretraga(dodatni, start)
             greske += g
-            gn2, g = google_news(dodatni, start, today)
-            greske += g
             # bez duplikata (po adresi i naslovu) u odnosu na prvi krug i bez vec ocijenjenih
-            novi = [k for k in spoji_kandidate(svi, exa2, gn2)[len(svi):]
+            novi = [k for k in spoji_kandidate(svi, exa2)[len(svi):]
                     if je_domaci(k) and not _vidjen(k, videno)][:60]
             n2 = len(novi)
             odabrani2, _ = urednik(cfg["naziv"], cfg["kontekst"], novi, start, today, trazi_upite=False)
@@ -939,20 +1136,22 @@ def obradi_klijenta(key, start, today, zajednicki):
     except Exception as e:
         greske.append(f"sažeci iz teksta (ostaju sažeci iz naslova): {e}")
     provjerene = [s for s in prosle if s["relevantnost"] >= MIN_RELEVANTNOST]
+    ispod = [f"{s['relevantnost']:g} | {s['izvor']} | {s['naslov'][:100]}"
+             for s in prosle if s["relevantnost"] < MIN_RELEVANTNOST]
 
     # Kandidati cija stranica trenutno nije dostupna ne pamte se, pa se pokusavaju ponovno.
     videno_kljucevi = sorted({x for k in ocijenjeni if k["url"] not in nedostupne for x in _kljucevi(k)})
     stats = {
         "pronadeno": len(kandidati) + n2, "spremljeno": len(provjerene),
         "pretrage": POTROSNJA["exa_upiti"] - exa_prije,
-        "koraci": (f"svježi upiti: Exa {svj_exa}, Google News {svj_gn}\n"
-                   f"   kandidati: Exa {len(exa1)}, Google News {len(gn1)} ({gn_po_upitu}), RSS {len(zaj)}, "
-                   f"institucije {len(inst)} → nakon spajanja {len(svi)}, već ocijenjenih {len(svi) - len(novi1)}, "
-                   f"novih {len(kandidati)} → urednik odabrao {len(odabrani1)}\n"
+        "koraci": (f"svježi upiti: {svjezi}\n"
+                   f"   kandidati: mediji (RSS) {len(mediji)}, Vlada {len(vlada)}, e-Savjetovanja {len(esav)}, "
+                   f"nabave (TED) {len(ted)}, Exa institucije {len(inst)}, Exa {len(exa1)} → nakon spajanja {len(svi)}, "
+                   f"već ocijenjenih {len(svi) - len(novi1)}, novih {len(kandidati)} → urednik odabrao {len(odabrani1)}\n"
                    f"   drugi krug: upiti {dodatni}, novih kandidata {n2}, odabrano {len(odabrani2)}\n"
-                   f"   provjera: prošlo {len(prosle)}, odbačeno {len(odbaceno)} | sažetak iz teksta {n_tekst}, "
-                   f"iz naslova {len(prosle) - n_tekst} | ispod praga nakon čitanja {len(prosle) - len(provjerene)}"),
-        "odbaceno": odbaceno, "napomene": napomene,
+                   f"   provjera: prošlo {len(prosle)}, odbačeno {len(odbaceno)} | sažetak iz teksta {n_tekst} | "
+                   f"ispod praga nakon čitanja {len(ispod)}"),
+        "odbaceno": odbaceno, "ispod_praga": ispod, "napomene": napomene,
         "videno_kljucevi": videno_kljucevi if videno is not None else [],
         "urednik_greska": urednik_greska,
     }
@@ -961,8 +1160,7 @@ def obradi_klijenta(key, start, today, zajednicki):
 
 def trazi_aktere(akteri, start, today):
     exa, _ = exa_pretraga(list(akteri), start)
-    gn, _ = google_news(list(akteri), start, today)
-    kandidati = [k for k in spoji_kandidate(exa, gn) if je_domaci(k)][:MAX_KANDIDATA]
+    kandidati = [k for k in spoji_kandidate(exa) if je_domaci(k)][:MAX_KANDIDATA]
     kontekst = ZBT_KONTEKST + f" AKTERI: {', '.join(akteri)}."
     odabrani, _ = urednik("ZBT (akteri)", kontekst, kandidati, start, today, trazi_upite=False)
     prosle = provjeri_sve(odabrani, start, today)
@@ -1010,10 +1208,14 @@ def sb_log(key, stats, greske):
 
 
 def sb_ocisti(dana=14):
-    granica = (date.today() - timedelta(days=dana)).isoformat()
-    requests.delete(_sb(f"vijesti?datum=lt.{granica}"), headers=_sb_h(), timeout=15).raise_for_status()
-    granica_v = (date.today() - timedelta(days=VIDENO_DANA)).isoformat()
-    requests.delete(_sb(f"videno?videno_at=lt.{granica_v}"), headers=_sb_h(), timeout=15).raise_for_status()
+    """Brise stare vijesti, osim onih kojima rok (savjetovanja, nabave) jos nije prosao."""
+    danas_iso = danas().isoformat()
+    granica = (danas() - timedelta(days=dana)).isoformat()
+    requests.delete(_sb("vijesti"), headers=_sb_h(), timeout=15,
+                    params={"datum": f"lt.{granica}", "rok": f"lt.{danas_iso}"}).raise_for_status()
+    granica_v = (danas() - timedelta(days=VIDENO_DANA)).isoformat()
+    requests.delete(_sb("videno"), headers=_sb_h(), timeout=15,
+                    params={"videno_at": f"lt.{granica_v}"}).raise_for_status()
 
 
 def sb_videno(key):
@@ -1049,9 +1251,12 @@ def sb_naslovi(key, dana=7, najvise=25):
     return [x["naslov"] for x in r.json() if x.get("naslov")]
 
 
-def sb_vijesti(key, start):
-    params = {"select": "*", "klijent": f"eq.{key}", "datum": f"gte.{start.isoformat()}",
-              "relevantnost": f"gte.{MIN_RELEVANTNOST}", "order": "relevantnost.desc,datum.desc"}
+def sb_vijesti(key, start, today=None):
+    """Vijesti iz razdoblja te savjetovanja i nabave kojima rok jos nije prosao."""
+    today = today or danas()
+    params = {"select": "*", "klijent": f"eq.{key}", "relevantnost": f"gte.{MIN_RELEVANTNOST}",
+              "or": f"(datum.gte.{start.isoformat()},rok.gte.{today.isoformat()})",
+              "order": "relevantnost.desc,datum.desc"}
     r = requests.get(_sb("vijesti"), headers=_sb_h(), params=params, timeout=15)
     r.raise_for_status()
     return r.json()
