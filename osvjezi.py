@@ -36,6 +36,8 @@ def main():
             print(f"   {stats['koraci']}")
             for o in stats["odbaceno"][:15]:
                 print(f"   odbačeno ({o})")
+            for o in stats["ispod_praga"][:15]:
+                print(f"   ispod praga nakon čitanja (ocjena | izvor | naslov): {o}")
             for g in greske:
                 print(f"   - {g}")
             greske_urednika += bool(stats["urednik_greska"])
@@ -61,7 +63,7 @@ def main():
         print("GREŠKA: urednik (Claude) nije uspio ni za jednog klijenta, provjerite greške iznad.")
         sys.exit(1)
     if ukupno_izvora == 0:
-        print("GREŠKA: nijedan zajednički izvor (RSS, institucije) nije vratio stavke, provjerite greške iznad.")
+        print("GREŠKA: nijedan zajednički izvor (RSS, e-Savjetovanja, nabave) nije vratio stavke, provjerite greške iznad.")
         sys.exit(1)
 
 
