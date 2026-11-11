@@ -1,6 +1,7 @@
 """Prikaz u Streamlit aplikaciji. Pretraga se radi u osvjezi.py (GitHub Actions),
 a aplikacija cita gotove rezultate iz Supabasea."""
 import hashlib
+import hmac
 import os
 from datetime import datetime, timedelta
 
@@ -56,14 +57,26 @@ hr { margin: 1.25rem 0; border: none; border-top: 1px solid var(--line); }
 KLJUCEVI = ["ANTHROPIC_API_KEY", "EXA_API_KEY", "SUPABASE_URL", "SUPABASE_KEY", "CLAUDE_MODEL"]
 
 
+def pristupni_kljuc():
+    """Kljuc izveden iz lozinke. Nalazi se u adresi stranice nakon prijave, pa oznaka (bookmark)
+    i poveznice s naslovnice otvaraju aplikaciju bez ponovnog upisivanja lozinke.
+    Promjena APP_PASSWORD ponistava sve stare poveznice."""
+    return hmac.new(st.secrets["APP_PASSWORD"].encode(), b"zbt-pracenje", hashlib.sha256).hexdigest()[:24]
+
+
 def check_password():
-    if st.session_state.get("password_correct"):
+    kljuc = pristupni_kljuc()
+    if st.session_state.get("password_correct") or hmac.compare_digest(st.query_params.get("k", ""), kljuc):
+        st.session_state["password_correct"] = True
+        if st.query_params.get("k") != kljuc:
+            st.query_params["k"] = kljuc  # adresa uvijek nosi kljuc, pa se moze spremiti kao oznaka
         return True
     st.title("Prijava")
     pw = st.text_input("Lozinka", type="password")
     if pw:
         if pw == st.secrets["APP_PASSWORD"]:
             st.session_state["password_correct"] = True
+            st.query_params["k"] = kljuc
             st.rerun()
         st.error("Netočna lozinka.")
     return False
@@ -126,6 +139,8 @@ def prikazi_vijesti(vijesti, klijent, prefix):
             if rok:
                 st.markdown(f'<span class="zbt-rok">Rok: {rok}</span>', unsafe_allow_html=True)
             st.write(v.get("sazetak") or "Pregledajte članak za detalje.")
+            if "sažetak iz naslova" in (v.get("krug") or ""):
+                st.caption("Sažetak je napisan iz naslova jer tekst nije bio dostupan.")
             _, c2 = st.columns([5, 1])
             with c2:
                 k = f"{prefix}_{_kljuc(v['url'])}"
@@ -138,14 +153,15 @@ def prikazi_vijesti(vijesti, klijent, prefix):
 
 @st.cache_data(ttl=timedelta(minutes=10), show_spinner=False)
 def _ucitaj(client_key):
-    start_d, _ = razdoblje()
-    return core.sb_vijesti(client_key, start_d), core.sb_zadnje_osvjezavanje(client_key)
+    start_d, today = razdoblje()
+    return core.sb_vijesti(client_key, start_d, today), core.sb_zadnje_osvjezavanje(client_key)
 
 
 def render_client_page(client_key):
     cfg = CLIENTS[client_key]
     st.title(cfg["naziv"])
-    st.caption(f"Zadnja {DANA_UNAZAD} dana · prag relevantnosti {MIN_RELEVANTNOST} · sortirano po relevantnosti")
+    st.caption(f"Zadnja {DANA_UNAZAD} dana te savjetovanja i nabave kojima rok još traje · "
+               f"prag relevantnosti {MIN_RELEVANTNOST} · sortirano po relevantnosti")
 
     try:
         vijesti, zadnje = _ucitaj(client_key)
@@ -154,10 +170,10 @@ def render_client_page(client_key):
         return
 
     if zadnje:
-        t = datetime.fromisoformat(zadnje["pokrenuto_at"].replace("Z", "+00:00")).astimezone()
+        t = datetime.fromisoformat(zadnje["pokrenuto_at"].replace("Z", "+00:00")).astimezone(core.ZAGREB)
         st.caption(
-            f"Zadnje osvježavanje {t:%d.%m.%Y. u %H:%M}  ·  pretraga {zadnje.get('pretrage', 0)}  ·  "
-            f"pronađeno {zadnje.get('pronadeno', 0)}  ·  spremljeno {zadnje.get('spremljeno', 0)}"
+            f"Zadnje osvježavanje {t:%d.%m.%Y. u %H:%M}  ·  novih kandidata {zadnje.get('pronadeno', 0)}  ·  "
+            f"novih vijesti {zadnje.get('spremljeno', 0)}"
         )
         if zadnje.get("greske"):
             with st.expander("Greške pri zadnjem osvježavanju"):
@@ -169,7 +185,7 @@ def render_client_page(client_key):
     if not vijesti:
         st.info(f"Nema relevantnih objava u zadnja {DANA_UNAZAD} dana.")
         return
-    prikazi_vijesti(vijesti, cfg["naziv"], prefix=client_key)
+    prikazi_vijesti(vijesti, cfg["naziv"], prefix=client_key)  # rok se prikazuje uz vijest
 
 
 @st.cache_data(ttl=timedelta(hours=6), show_spinner=False)
@@ -177,4 +193,4 @@ def fetch_akteri(akteri):
     """Pretraga na zahtjev (stranica Akteri). Svaka nova kombinacija aktera trosi pretrage."""
     start_d, today = razdoblje()
     vijesti, _ = core.trazi_aktere(list(akteri), start_d, today)
-    return {"vijesti": vijesti, "dohvaceno": len(vijesti)}
+    return {"vijesti": vijesti, "dohvaceno": len(vijesti)}  # stranica Akteri cita oba kljuca
