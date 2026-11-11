@@ -139,6 +139,8 @@ def prikazi_vijesti(vijesti, klijent, prefix):
             if rok:
                 st.markdown(f'<span class="zbt-rok">Rok: {rok}</span>', unsafe_allow_html=True)
             st.write(v.get("sazetak") or "Pregledajte članak za detalje.")
+            if "sažetak iz naslova" in (v.get("krug") or ""):
+                st.caption("Sažetak je napisan iz naslova jer tekst članka nije bio dostupan.")
             _, c2 = st.columns([5, 1])
             with c2:
                 k = f"{prefix}_{_kljuc(v['url'])}"
@@ -167,10 +169,10 @@ def render_client_page(client_key):
         return
 
     if zadnje:
-        t = datetime.fromisoformat(zadnje["pokrenuto_at"].replace("Z", "+00:00")).astimezone()
+        t = datetime.fromisoformat(zadnje["pokrenuto_at"].replace("Z", "+00:00")).astimezone(core.ZAGREB)
         st.caption(
-            f"Zadnje osvježavanje {t:%d.%m.%Y. u %H:%M}  ·  pretraga {zadnje.get('pretrage', 0)}  ·  "
-            f"pronađeno {zadnje.get('pronadeno', 0)}  ·  spremljeno {zadnje.get('spremljeno', 0)}"
+            f"Zadnje osvježavanje {t:%d.%m.%Y. u %H:%M}  ·  novih kandidata {zadnje.get('pronadeno', 0)}  ·  "
+            f"novih vijesti {zadnje.get('spremljeno', 0)}"
         )
         if zadnje.get("greske"):
             with st.expander("Greške pri zadnjem osvježavanju"):
@@ -190,4 +192,4 @@ def fetch_akteri(akteri):
     """Pretraga na zahtjev (stranica Akteri). Svaka nova kombinacija aktera trosi pretrage."""
     start_d, today = razdoblje()
     vijesti, _ = core.trazi_aktere(list(akteri), start_d, today)
-    return {"vijesti": vijesti, "dohvaceno": len(vijesti)}
+    return {"vijesti": vijesti, "dohvaceno": len(vijesti)}  # stranica Akteri cita oba kljuca
